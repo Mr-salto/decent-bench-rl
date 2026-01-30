@@ -1,12 +1,15 @@
 from __future__ import annotations
 from typing import Sequence, Dict, Any, Callable
 import numpy as np
+import decent_bench.utils.interoperability as iop
+from decent_bench.utils.array import Array
+
 
 class PettingZooEnv:
     """
     Minimal wrapper connecting decent_bench's Agent objects
     with a generic PettingZoo Parallel environment.
-    
+
     The wrapper:
       - creates the environment
       - maps Agent[i] -> env.agents[i]
@@ -64,7 +67,7 @@ class PettingZooEnv:
             A dict mapping Agent -> initial observation.
         """
         # Parallel API returns a tuple of dicts: tuple[dict[AgentID, ObsType], dict[AgentID, dict]]
-        obs, info = self.env.reset(**kwargs)  
+        obs, info = self.env.reset(**kwargs)
         self.last_obs = {}
         self.last_rewards = {name: 0.0 for name in self.env_agent_names}
         self.last_dones = {name: False for name in self.env_agent_names}
@@ -75,13 +78,16 @@ class PettingZooEnv:
             agent = self.env_name_to_agent[env_name]
 
             self.last_obs[env_name] = observation
-            agent.aux_vars["latest_obs"] = observation
 
-            agent_obs[agent] = observation
+            framework, device = iop.framework_device_of_array(observation)
+            obs_array = iop.to_array(observation, framework, device)
+
+            agent.aux_vars["latest_obs"] = obs_array
+            agent_obs[agent] = obs_array
 
         return agent_obs
-    
-    def step(self, action_dict):
+
+    def step(self, action_dict: Dict[Agent, Array]):
         """
         Take a step in the underlying PettingZoo environment.
 
@@ -93,15 +99,11 @@ class PettingZooEnv:
         """
 
         env_actions = {
-            self.agent_to_env_name[agent]: action
-            for agent, action in action_dict.items()
+            self.agent_to_env_name[agent]: self._array_to_int(action) for agent, action in action_dict.items()
         }
-
-        obs_dict, reward_dict, done_dict, _ , info_dict = self.env.step(env_actions)
-
+        obs_dict, reward_dict, terminated_dict, truncated_dict, info_dict = self.env.step(env_actions)
         self.last_obs = obs_dict.copy()
         self.last_rewards = reward_dict.copy()
-        self.last_dones = done_dict.copy()
         self.last_infos = info_dict.copy()
 
         results = {}
@@ -111,15 +113,22 @@ class PettingZooEnv:
 
             obs = obs_dict.get(env_name)
             rew = reward_dict.get(env_name, 0.0)
-            done = done_dict.get(env_name, False)
+            terminated = terminated_dict.get(env_name, False)
+            truncated = truncated_dict.get(env_name, False)
+            done = terminated or truncated
             info = info_dict.get(env_name, {})
 
-            agent.aux_vars["latest_obs"] = obs
+            if obs is not None:
+                framework, device = iop.framework_device_of_array(obs)
+                obs_array = iop.to_array(obs, framework, device)
+                agent.aux_vars["latest_obs"] = obs_array
+            else:
+                obs_array = None
 
-            results[agent] = (obs, rew, done, info)
+            results[agent] = (obs_array, rew, done, info)
 
         return results
-    
+
     def render(self):
         """
         Render the underlying PettingZoo environment.
@@ -132,3 +141,24 @@ class PettingZooEnv:
         """
         if hasattr(self.env, "close"):
             self.env.close()
+
+    def _array_to_int(self, array: Array) -> int:
+        val = array.value if isinstance(array, Array) else array
+        try:
+            import numpy as _np
+
+            if isinstance(val, _np.ndarray):
+                return int(val.item())
+            if isinstance(val, (_np.generic,)):
+                return int(val.item())
+        except Exception:
+            pass
+
+        try:
+            import torch as _torch
+
+            if isinstance(val, _torch.Tensor):
+                return int(val.item())
+        except Exception:
+            pass
+        return int(val)
