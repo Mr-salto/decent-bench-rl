@@ -2,18 +2,136 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List, final, Callable
+from abc import ABC, abstractmethod
+
 
 import decent_bench.utils.interoperability as iop
 from decent_bench.utils_rl.q_networks import QNetwork
 from decent_bench.utils.types import SupportedDevices, SupportedFrameworks
 from decent_bench.distributed_algorithms import Algorithm
 from decent_bench.utils_rl.replay_buffer import SimpleReplayBuffer
+from decent_bench.utils_rl.plot_return import plot_mean_episode_return
 from decent_bench.networks import Network
+from decent_bench.rl_agents import RLAgent
+from decent_bench.environments import PettingZooEnv
+
+
+
+class RLAlgorithm(ABC):
+    """RL algorithm - agents collaborate to solve a problem using RL."""
+
+    @property
+    @abstractmethod
+    def episodes(self) -> int:
+        """Number of episodes to run the algorithm for."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Name of the algorithm."""
+
+    @abstractmethod
+    def initialize(self, agents: list[RLAgent]) -> None:
+        """
+        Initialize the algorithm.
+
+        Args:
+            agents: provides agents
+
+        """
+
+    @abstractmethod
+    def step(self, agents: list[RLAgent]) -> None:
+        """
+        Perform one iteration of the algorithm.
+
+        Args:
+            agents: provides agents
+            iteration: current iteration number
+
+        """
+
+    def finalize(self, agents: list[RLAgent], mean_episode_returns: list[float], env: PettingZooEnv) -> None:
+        """
+        Finalize the algorithm.
+
+        Note:
+            Override method as needed.
+            Does not need to be implemented if no finalization is required.
+            By default it is used to clean up auxiliary variables to free memory.
+
+        Args:
+            agents: provides agents
+
+        """
+        for i in agents:
+            if i.aux_vars is not None:
+                i.aux_vars.clear()
+        plot_mean_episode_return(mean_episode_returns)
+        print("Closing environment.")
+        env.close()
+
+    @final
+    def run(self, agents: list[RLAgent], env: PettingZooEnv, progress_callback: Callable[[int], None] | None = None) -> None:
+        """
+        Run the algorithm.
+
+        Note:
+            This method first calls :meth:`initialize`, then :meth:`step` for the specified number of iterations
+            and finally :meth:`finalize`.
+
+        Warning:
+            Do not override this method. Instead, override :meth:`initialize`, :meth:`step` and :meth:`finalize`
+            as needed.
+
+        Args:
+            agents: provides agents
+            progress_callback: optional callback to report progress after each iteration.
+
+        """
+        self.initialize(agents)
+        mean_episode_returns = []
+        
+        for episode in range(self.episodes):
+            print(f"\n===== EPISODE {episode} =====")
+            action_dict = {}
+            obs = env.reset()
+            N_STEPS = 30
+            for step in range(N_STEPS): # Pass N_steps per episode as arg somewhere
+                for agent in agents:
+                    obs[agent] = agent.aux_vars["latest_obs"]
+                    action = agent.act(obs=obs[agent], deterministic=False)
+                    action_dict[agent] = action
+
+                results = env.step(action_dict)
+
+                for agent, (next_obs, reward, done, info) in results.items():
+                    buffer_size = agent.store_transition(
+                        obs[agent],
+                        action_dict[agent],
+                        reward,
+                        next_obs,
+                        done,
+                    )
+
+                if any(entry[2] for entry in results.values()):
+                    per_agent_returns = []
+                    for agent in agents:
+                        per_agent_returns.append(agent.recent_returns[-1])
+                    mean_episode_returns.append(np.mean(per_agent_returns))
+                    break
+
+                self.step(agents)
+
+            if progress_callback is not None:
+                progress_callback(k)
+
+        self.finalize(agents, mean_episode_returns, env)
 
 
 @dataclass(eq=False)
-class IndependentDQN(Algorithm):
+class IndependentDQN(RLAlgorithm):
     """
     Independent DQN (IDQN) algorithm — each agent trains its own Q-network using
     its local replay buffer. Implements initialize() and step().
@@ -28,8 +146,7 @@ class IndependentDQN(Algorithm):
       - grad_updates_per_step: number of gradient steps per training trigger (often 1)
       - device: "cpu" or "cuda"
     """
-
-    iterations: int = 100
+    episodes: int = 100
     name: str = "IDQN"
 
     gamma: float = 0.99
@@ -42,8 +159,8 @@ class IndependentDQN(Algorithm):
     name: str = "IndependentDQN"
     device: str = "cpu"
 
-    def initialize(self, network: Network) -> None:
-        for agent in network.agents():
+    def initialize(self, agents: list[RLAgent]) -> None:
+        for agent in agents:
             torch_device = torch.device(self.device)
 
             if agent.q_network is None:
@@ -74,7 +191,7 @@ class IndependentDQN(Algorithm):
             if agent.replay_buffer is None:
                 agent.replay_buffer = SimpleReplayBuffer(capacity=100000)
 
-    def step(self, network: Network, iteration: int) -> None:
+    def step(self, agents: list[RLAgent]) -> None:
         """
         One iteration: for each active agent, possibly perform training updates if buffer is ready.
          - update epsilon from schedule (if present) using agent.global_step
@@ -88,7 +205,7 @@ class IndependentDQN(Algorithm):
              - periodically sync target network
         """
 
-        for agent in network.active_agents(iteration):
+        for agent in agents:
             if agent.epsilon_schedule is not None and callable(agent.epsilon_schedule):
                 agent.epsilon = float(agent.epsilon_schedule(agent.global_step))
 
