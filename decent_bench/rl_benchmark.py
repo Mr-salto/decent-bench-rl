@@ -45,7 +45,7 @@ def benchmark(
         n_trials: number of times to run each algorithm on the benchmark problem, running more trials improves the
             statistical results, at least 30 trials are recommended for the central limit theorem to apply
     """
-    _run_trials(algorithms, n_trials, benchmark_problem.n_agents, benchmark_problem.env_factory, max_processes)
+    result = _run_trials(algorithms, n_trials, benchmark_problem.n_agents, benchmark_problem.env_factory, max_processes)
 
 
 def _run_trials( 
@@ -83,19 +83,10 @@ def _run_trial(
         env_name = env.agent_to_env_name[agent]
         agent.action_space = env.action_spaces[env_name]
         agent.observation_space = env.observation_spaces[env_name]
-        agent.n_actions = agent.action_space.n
-        agent.epsilon_schedule = LinearDecreasingEpsilon(value=0)
-        agent.epsilon = agent.epsilon_schedule(step=0)
-
-        obs_shape = agent.observation_space.shape
-        obs_dim = int(np.prod(obs_shape))
-        qnet = QNetwork(obs_dim=obs_dim, n_actions=agent.n_actions, hidden_sizes=HIDDEN_SIZES, device=DEVICE)
-        agent.q_network = qnet
-    
 
     with warnings.catch_warnings(action="error"):
         try:
-            alg.run(agents, env)
+            mean_episode_returns = alg.run(agents, env)
         except Exception as e:
             LOGGER.exception(f"An error or warning occurred when running {alg.name}: {type(e).__name__}: {e}")
-    return agents
+    return agents, mean_episode_returns
