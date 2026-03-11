@@ -1,7 +1,7 @@
 from collections import deque
 import random
 from decent_bench.utils.array import Array
-from typing import Tuple, List
+from typing import Tuple, List, Any, Dict, Optional
 import numpy as np
 import decent_bench.utils.interoperability as iop
 
@@ -91,3 +91,130 @@ class SimpleReplayBuffer:
             "dones": dones_batch,
             "infos": infos_list,
         }
+class RolloutBuffer:
+    """
+    Simple on-policy rollout buffer
+    Designed for independent-agent A2C-style training.
+    """
+    def __init__(
+        self,
+        gae_lambda: float = 1,
+        gamma: float = 1,
+        ) -> None:
+        self.observations: List[Array] = []
+        self.actions: List[int] = []
+        self.rewards: List[float] = []
+        self.dones: List[bool] = []
+        self.logprobs: List[float] = []
+        self.values: List[float] = []
+
+        self.advantages: Optional[Array] = None
+        self.returns: Optional[Array] = None
+
+        self.gae_lambda = gae_lambda
+        self.gamma = gamma
+
+    def add(self,
+        obs: Array,
+        action: int,
+        reward: float,
+        done: bool,
+        logprob: float,
+        value: float,
+        ) -> None:
+        """Append one timestep of data"""
+        self.observations.append(obs)
+        self.actions.append(action)
+        self.rewards.append(float(reward))
+        self.dones.append(bool(done))
+        self.logprobs.append(float(logprob))
+        self.values.append(float(value))
+
+    def len(self) -> int:
+        """Number of timesteps stored"""
+        return len(self.rewards)
+
+    def is_full(self, n_steps: int) -> bool:
+        """Return True if collected >= n_steps."""
+        return self.len() >= n_steps
+
+    def compute_returns_and_advantages(self, last_value: float, gamma: float, gae_lambda: float):
+        """
+        Compute Generalized Advantage Estimation (GAE) advantages and returns from stored rewards/values.
+        Populates self.advantages and self.returns
+        Args: 
+            last_value: state value estimation for the last step
+        """
+        T = len(self.rewards)
+        rewards = np.array(self.rewards, dtype=np.float32)
+        dones = np.array(self.dones, dtype=np.float32)
+        values = np.array(self.values, dtype=np.float32)
+
+        advantages = np.zeros(T, dtype=np.float32)
+        
+        last_gae = 0.0
+        next_value = float(last_value)
+
+        for t in reversed(range(T)):
+            nonterminal = 1.0 - dones[t]
+            delta = rewards[t] + self.gamma * next_value * nonterminal - values[t]
+            last_gae = delta + self.gamma * self.gae_lambda * nonterminal * last_gae
+            advantages[t] = last_gae
+            next_value = values[t]
+
+        returns = advantages + values
+
+        framework, device = iop.framework_device_of_array(self.observations[0])
+
+        self.advantages = iop.to_array(advantages, framework, device)
+        self.returns = iop.to_array(returns, framework, device)
+
+    def get(self) -> Dict[str, Array]:
+        """
+        Return rollout as iop Arrays.
+        Returns a dict with keys:
+        - obs: stacked observations (Array) shape [B, ...]
+        - actions: stacked actions (Array) shape [B]
+        - values: stacked values (Array) shape [B]
+        - logprobs: stacked logprobs (Array) shape [B]
+        - returns: stacked returns (Array) shape [B]
+        - advantages: stacked advantages (Array) shape [B]
+        - dones: stacked dones (Array) shape [B]
+        """
+        if self.advantages is None or self.returns is None:
+            raise RuntimeError(
+                "Call compute_returns_and_advantages() before get()."
+            )        
+        framework, device = iop.framework_device_of_array(self.observations[0])
+        
+        actions_np = np.array(self.actions, dtype=np.int64)
+        values_np = np.array(self.values, dtype=np.float32)
+        logprobs_np = np.array(self.logprobs, dtype=np.float32)
+        dones_np = np.array(self.dones, dtype=np.bool_)
+        
+        obs_batch = iop.stack(self.observations, dim=0)
+        actions_batch = iop.to_array(actions_np, framework, device)
+        values_batch = iop.to_array(values_np, framework, device)
+        logprobs_batch = iop.to_array(logprobs_np, framework, device)
+        dones_batch = iop.to_array(dones_np, framework, device)
+
+        return {
+            "obs": obs_batch,
+            "actions": actions_batch,
+            "values": values_batch,
+            "logprobs": logprobs_batch,
+            "returns": self.returns,
+            "advantages": self.advantages,
+            "dones": dones_batch,
+        }
+
+    def clear(self) -> None:
+        """Empty the buffer (for next rollout)."""
+        self.observations.clear()
+        self.actions.clear()
+        self.rewards.clear()
+        self.dones.clear()
+        self.logprobs.clear()
+        self.values.clear()
+        self.advantages = None
+        self.returns = None
