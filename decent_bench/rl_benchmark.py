@@ -83,7 +83,8 @@ def _run_trial(
         env_name = env.agent_to_env_name[agent]
         agent.action_space = env.action_spaces[env_name]
         agent.observation_space = env.observation_spaces[env_name]
-
+    
+    mean_episode_returns = []
     with warnings.catch_warnings(action="error"):
         try:
             mean_episode_returns = alg.run(agents, env)

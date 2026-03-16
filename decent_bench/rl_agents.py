@@ -123,6 +123,7 @@ class RLAgent(Agent):
         self.episode_length: int = 0
         self.recent_returns: list[float] = []
 
+        self.aux_vars["obs_at_act"] = None
         self.aux_vars["latest_obs"] = None
         self.aux_vars["last_action"] = None
         self.aux_vars["last_logprob"] = None
@@ -147,7 +148,10 @@ class RLAgent(Agent):
 
         if obs is None:
             raise RuntimeError(f"Agent {self.id}: act() called without an observation.")
-        
+
+        # Save the obs used for this action so on_step_collect can retrieve the pre-step obs.
+        self.aux_vars["obs_at_act"] = obs
+
         if self.policy is not None: 
             res = self.policy.get_action_and_value(obs, deterministic=deterministic)
             if isinstance(res, tuple) or isinstance(res, list):

@@ -523,6 +523,22 @@ class ActorCritic(BaseNetwork):
             values_t = self.predict_values_torch(obs_t)
         return self._to_iop_array(values_t)
 
+    def get_action_and_value(self, obs: Array, deterministic: bool = False) -> tuple:
+        """
+        Interface compatible with RLAgent.act(). Equivalent to forward().
+
+        Args:
+            obs: observation (iop Array or numpy array), shape [obs_dim]
+            deterministic: if True, take the greedy (argmax) action
+        Returns:
+            (action: int, logprob: float, value: float)
+        """
+        action_arr, value_arr, logprob_arr = self.forward(obs, deterministic=deterministic)
+        action = int(iop.to_torch(action_arr, self._supported_device).squeeze().item())
+        logprob = float(iop.to_torch(logprob_arr, self._supported_device).squeeze().item())
+        value = float(iop.to_torch(value_arr, self._supported_device).squeeze().item())
+        return (action, logprob, value)
+
     def get_distribution(self, obs: Array):
         """
         Get the action probability distribution with the current policy

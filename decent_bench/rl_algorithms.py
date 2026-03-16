@@ -8,10 +8,10 @@ from abc import ABC, abstractmethod
 
 
 import decent_bench.utils.interoperability as iop
-from decent_bench.utils_rl.q_networks import DQNPolicy
+from decent_bench.utils_rl.q_networks import DQNPolicy, ActorCritic
 from decent_bench.utils.types import SupportedDevices, SupportedFrameworks
 from decent_bench.distributed_algorithms import Algorithm
-from decent_bench.utils_rl.replay_buffer import SimpleReplayBuffer
+from decent_bench.utils_rl.replay_buffer import SimpleReplayBuffer, RolloutBuffer
 from decent_bench.utils_rl.plot_return import plot_mean_episode_return
 from decent_bench.networks import Network
 from decent_bench.rl_agents import RLAgent, LinearDecreasingEpsilon
@@ -111,7 +111,6 @@ class RLAlgorithm(ABC):
         
         for episode in range(self.episodes):
             print(f"\n===== EPISODE {episode} =====")
-            print("epsilon = ", agents[0].policy.epsilon)
             action_dict = {}
             obs = env.reset()
             episode_done = False
@@ -214,7 +213,7 @@ class IndependentDQN(RLAlgorithm):
     def on_step_collect(self, agents: list[RLAgent], results: Dict[RLAgent, tuple]) -> None:
         """IDQN collects transitions by calling agent.store_transition()."""
         for agent, (next_obs, reward, done, info) in results.items():
-            prev_obs = agent.aux_vars["latest_obs"]
+            prev_obs = agent.aux_vars["obs_at_act"]
             action = agent.aux_vars["last_action"]
             agent.store_transition(prev_obs, action, reward, next_obs, done, info)
 
@@ -276,3 +275,155 @@ class IndependentDQN(RLAlgorithm):
 
                 if agent.aux_vars["dqn_train_steps"] % self.target_update_freq == 0:
                     policy.sync_target()
+
+
+@dataclass(eq=False)
+class A2C(RLAlgorithm):
+    """
+    Independent A2C (Advantage Actor-Critic) — each agent trains its own ActorCritic
+    network using its local on-policy rollout buffer.
+
+    Algorithm type: synchronous, on-policy.
+    Update trigger: end of each episode (full rollout).
+
+    Update: single gradient step using
+      - Policy (actor) loss:  -E[log π(a|s) · A(s,a)]
+      - Value (critic) loss:  MSE(V(s), return_t)
+      - Entropy bonus:        -H(π)   (promotes exploration)
+    Advantages are computed with Generalized Advantage Estimation (GAE).
+
+    Hyperparameters:
+      - gamma: discount factor
+      - gae_lambda: GAE smoothing (1 = Monte-Carlo, 0 = 1-step TD)
+      - lr: shared learning rate for actor and critic
+      - vf_coef: value loss weight in the combined loss
+      - ent_coef: entropy bonus weight
+      - device: 'cpu' or 'cuda'
+    """
+    episodes: int = 100
+    episode_length: int = 30
+    name: str = "A2C"
+
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    lr: float = 3e-4
+    vf_coef: float = 0.5
+    ent_coef: float = 0.01
+    device: str = "cpu"
+
+    def initialize(self, agents: list[RLAgent]) -> None:
+        for agent in agents:
+            obs_space = agent.observation_space
+            if obs_space is None:
+                raise RuntimeError(
+                    f"Agent {agent.id} has no observation_space set during A2C.initialize()"
+                )
+            obs_dim = int(np.prod(obs_space.shape))
+            n_actions = agent.action_space.n
+
+            policy = ActorCritic(
+                obs_dim=obs_dim,
+                n_actions=n_actions,
+                hidden_sizes=(64, 64),
+                shared_features=False,
+                device=self.device,
+            )
+            agent.attach_policy(policy)
+
+            optimizer = torch.optim.Adam(policy.parameters(), lr=self.lr)
+            agent.aux_vars["optimizer"] = optimizer
+
+            agent.rollout_buffer = RolloutBuffer(gae_lambda=self.gae_lambda, gamma=self.gamma)
+
+    def on_step_collect(self, agents: list[RLAgent], results: Dict[RLAgent, tuple]) -> None:
+        """
+        Store each agent's (obs_t, action_t, reward_t, done_t, logprob_t, value_t) in
+        their rollout buffer. obs_t is retrieved from aux_vars["obs_at_act"] which was
+        saved by RLAgent.act() — this is the pre-step observation used to select the action.
+        """
+        for agent, (next_obs, reward, done, info) in results.items():
+            obs_t = agent.aux_vars.get("obs_at_act")
+            if obs_t is None:
+                obs_t = next_obs  # fallback: only possible if act() was not called
+
+            action_t = agent.aux_vars["last_action"]
+            logprob_t = float(agent.aux_vars.get("last_logprob") or 0.0)
+            value_t = float(agent.aux_vars.get("last_value") or 0.0)
+
+            agent.rollout_buffer.add(obs_t, action_t, reward, done, logprob_t, value_t)
+
+            # Update per-step episode tracking (mirrors store_transition for replay buffers)
+            agent.global_step += 1
+            agent.episode_return += float(reward)
+            agent.episode_length += 1
+            agent.aux_vars["episode_return"] = agent.episode_return
+            agent.aux_vars["episode_length"] = agent.episode_length
+
+            if done:
+                agent.recent_returns.append(agent.episode_return)
+                agent.reset_episode_counters()
+
+    def on_step_update(self, agents: list[RLAgent]) -> None:
+        """A2C is on-policy; gradient updates are deferred to on_episode_end."""
+        return None
+
+    def on_episode_end(self, agents: list[RLAgent]) -> None:
+        """
+        1. Bootstrap the value of the last state.
+        2. Compute GAE advantages and discounted returns.
+        3. Single gradient step: policy loss + value loss + entropy bonus.
+        4. Clear the rollout buffer for the next episode.
+        """
+        for agent in agents:
+            rollout = agent.rollout_buffer
+            if rollout.len() == 0:
+                continue
+
+            policy: ActorCritic = agent.policy
+            optimizer = agent.aux_vars["optimizer"]
+            dev = policy.torch_device
+
+            # Bootstrap: V(s_T) — if the last transition was terminal, GAE masks it out.
+            last_obs = agent.aux_vars.get("latest_obs")
+            if last_obs is not None:
+                with torch.no_grad():
+                    last_obs_t = policy._to_torch_tensor(last_obs)
+                    last_value = float(policy.predict_values_torch(last_obs_t).squeeze().item())
+            else:
+                last_value = 0.0
+
+            rollout.compute_returns_and_advantages(
+                last_value=last_value,
+                gamma=self.gamma,
+                gae_lambda=self.gae_lambda,
+            )
+
+            batch = rollout.get()
+
+            obs_t = iop.to_torch(batch["obs"], dev)
+            actions_t = iop.to_torch(batch["actions"], dev).long()
+            advantages_t = iop.to_torch(batch["advantages"], dev)
+            returns_t = iop.to_torch(batch["returns"], dev)
+
+            # Normalise advantages for numerical stability
+            if advantages_t.numel() > 1:
+                advantages_t = (advantages_t - advantages_t.mean()) / (advantages_t.std() + 1e-8)
+
+            # --- Gradient update ---
+            policy.torch_module.train()
+            log_probs_t, entropy_t, values_t = policy.evaluate_actions_torch(obs_t, actions_t)
+
+            policy_loss = -(log_probs_t * advantages_t.detach()).mean()
+            value_loss = F.mse_loss(values_t, returns_t)
+            entropy_loss = -entropy_t.mean()
+
+            loss = policy_loss + self.vf_coef * value_loss + self.ent_coef * entropy_loss
+
+            optimizer.zero_grad()
+            loss.backward()
+            clip_grad_norm_(policy.parameters(), max_norm=10.0)
+            optimizer.step()
+
+            agent.train_step += 1
+            rollout.clear()
+

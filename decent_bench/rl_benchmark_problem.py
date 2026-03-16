@@ -20,15 +20,15 @@ class RLBenchmarkProblem:
     """
     env_factory: Callable[..., Any]
     n_agents: int
-    # episode_length: int
+    episode_length: int
     # n_episodes: int
 
 
 
 def create_simple_spread_problem(
-    n_agents: int = 1,
-    # episode_length: int = 40, unused for now 
-    # n_episodes: int = 200
+    n_agents: int = 2,
+    episode_length: int = 50,
+    # n_episodes: int = 200 unused for now 
 ) -> RLBenchmarkProblem:
     """
     Create out-of-the-box simple-spread problems using PettingZoo.
@@ -42,6 +42,6 @@ def create_simple_spread_problem(
     return RLBenchmarkProblem(
         env_factory = env_factory,
         n_agents = n_agents,
-        # episode_length = episode_length,
+        episode_length = episode_length,
         # n_episodes = n_episodes
     )
