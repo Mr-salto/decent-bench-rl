@@ -26,7 +26,7 @@ class RLBenchmarkProblem:
 
 
 def create_simple_spread_problem(
-    n_agents: int = 2,
+    n_agents: int = 1,
     episode_length: int = 50,
     # n_episodes: int = 200 unused for now 
 ) -> RLBenchmarkProblem:
