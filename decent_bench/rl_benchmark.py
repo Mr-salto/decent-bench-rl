@@ -14,7 +14,7 @@ from decent_bench.rl_agents import RLAgent, LinearDecreasingEpsilon
 from decent_bench.environments import PettingZooEnv
 import decent_bench.utils.interoperability as iop
 from decent_bench.utils_rl.q_networks import QNetwork
-from decent_bench.utils_rl.plot_return import plot_mean_episode_return
+from decent_bench.utils_rl.plot_return import plot_benchmark_mean_episode_returns
 from decent_bench.schemes import AlwaysActive
 
 
@@ -35,7 +35,7 @@ def benchmark(
     n_trials: int = 1,
     max_processes: int | None = 1,
 
-) -> None:
+) -> dict[RLAlgorithm, list[tuple[list[RLAgent], list[float]]]]:
     """
     Benchmark MARL algorithms.
 
@@ -47,6 +47,13 @@ def benchmark(
     """
     result = _run_trials(algorithms, n_trials, benchmark_problem.n_agents, benchmark_problem.env_factory, max_processes)
 
+    returns_by_algorithm = {
+        alg.name: [trial_returns for _, trial_returns in trials]
+        for alg, trials in result.items()
+    }
+    plot_benchmark_mean_episode_returns(returns_by_algorithm)
+    return result
+
 
 def _run_trials( 
     algorithms: list[RLAlgorithm],
@@ -56,7 +63,7 @@ def _run_trials(
     max_processes: int | None,
     #progress_bar_ctrl: ProgressBarController,
     log_listener: QueueListener = None
-) -> dict[RLAlgorithm, list[list[RLAgent]]]:
+) -> dict[RLAlgorithm, list[tuple[list[RLAgent], list[float]]]]:
     #progress_bar_handle = progress_bar_ctrl.get_handle()
     if max_processes == 1:
         result = {
@@ -72,7 +79,7 @@ def _run_trial(
     n_agents: int,
     #progress_bar_handle: "ProgressBarHandle",
     trial: int
-) -> None:
+) -> tuple[list[RLAgent], list[float]]:
     #progress_bar_handle.start_progress_bar(algorithm, trial)
     alg = deepcopy(algorithm)
 

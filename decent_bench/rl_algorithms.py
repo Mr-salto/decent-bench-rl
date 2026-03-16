@@ -12,7 +12,6 @@ from decent_bench.utils_rl.q_networks import DQNPolicy, ActorCritic
 from decent_bench.utils.types import SupportedDevices, SupportedFrameworks
 from decent_bench.distributed_algorithms import Algorithm
 from decent_bench.utils_rl.replay_buffer import SimpleReplayBuffer, RolloutBuffer
-from decent_bench.utils_rl.plot_return import plot_mean_episode_return
 from decent_bench.networks import Network
 from decent_bench.rl_agents import RLAgent, LinearDecreasingEpsilon
 from decent_bench.environments import PettingZooEnv
@@ -85,7 +84,6 @@ class RLAlgorithm(ABC):
         for i in agents:
             if i.aux_vars is not None:
                 i.aux_vars.clear()
-        plot_mean_episode_return(mean_episode_returns)
         print("Closing environment.")
         env.close()
 
