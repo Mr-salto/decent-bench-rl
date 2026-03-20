@@ -169,7 +169,7 @@ class QNetwork(BaseNetwork):
             obs: iop Array or native array (shape [obs_dim] or [B, obs_dim])
 
         Returns:
-            q_values: iop array of shape [B, n_actions] or [n_actions] for single sample.
+            Q-values as iop array of shape [B, n_actions] or [n_actions] for single sample.
 
         """
         obs_t = self._to_torch_tensor(obs)
@@ -181,9 +181,10 @@ class QNetwork(BaseNetwork):
         """
         Torch-native forward.
 
-        Accepts a torch.Tensor on self.torch_device and
-        returns Q-values as a torch.Tensor with shape [B, n_actions] (or [1, n_actions]).
-        Used for back propagation during training.
+        Accepts a torch.Tensor on self.torch_device and used for back propagation during training.
+
+        Returns:
+            Q-values as a torch.Tensor with shape [B, n_actions] (or [1, n_actions]).
 
         Raises:
             RuntimeError: if PyTorch is unavailable.
@@ -267,8 +268,7 @@ class DQNPolicy(BaseNetwork):
             deterministic: if True, always pick the greedy action (epsilon ignored)
 
         Returns:
-            (action, None, q_value): action as int, no log-prob (None for DQN),
-            and the Q-value of the selected action.
+            action as int, no log-prob (None for DQN), and the Q-value of the selected action.
 
         """
         obs_t = self._to_torch_tensor(obs)
@@ -378,8 +378,8 @@ class ActorCritic(BaseNetwork):
             obs_t: torch.Tensor shape [B, obs_dim] or [obs_dim]
 
         Returns:
-            logits: [B, n_actions]
-            values: [B]
+            logits with shape [B, n_actions]
+            values with shape [B]
 
         """
         obs_t = obs_t.float()
@@ -527,7 +527,7 @@ class ActorCritic(BaseNetwork):
             deterministic: if True, take the greedy (argmax) action
 
         Returns:
-            (action: int, logprob: float, value: float)
+            action, log-probability, value estimate.
 
         """
         action_arr, value_arr, logprob_arr = self.forward(obs, deterministic=deterministic)

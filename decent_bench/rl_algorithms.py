@@ -100,12 +100,14 @@ class RLAlgorithm(ABC):
         Run the algorithm.
 
         Note:
-            This method first calls :meth:`initialize`, then :meth:`step` for the specified number of episodes
-            and finally :meth:`finalize`. Relies on store_transition t increment agent.globel_step.
+            This method first calls :meth:`initialize`, then runs the episode loop by repeatedly calling
+            :meth:`on_step_collect`, :meth:`on_step_update` and :meth:`on_episode_end`. Finally calls :meth:`finalize`.
+            Relies on transition collection to increment ``agent.global_step``.
 
         Warning:
-            Do not override this method. Instead, override :meth:`initialize`, :meth:`step` and :meth:`finalize`
-            as needed.
+            Do not override this method. Instead, override lifecycle hooks such as
+            :meth:`initialize`, :meth:`on_step_collect`, :meth:`on_step_update`,
+            :meth:`on_episode_end`, and :meth:`finalize` as needed.
 
         Args:
             agents: provides agents
@@ -314,10 +316,11 @@ class A2C(RLAlgorithm):
     Algorithm type: synchronous, on-policy.
     Update trigger: end of each episode (full rollout).
 
-    Update: single gradient step using
+    Update: single gradient step using:
       - Policy (actor) loss:  -E[log π(a|s) · A(s,a)]
       - Value (critic) loss:  MSE(V(s), return_t)
       - Entropy bonus:        -H(π)   (promotes exploration)
+
     Advantages are computed with Generalized Advantage Estimation (GAE).
 
     Hyperparameters:
