@@ -42,6 +42,11 @@ autodoc_type_aliases = {
     "Network": "decent_bench.networks.Network",
     "NetworkT": "decent_bench.utils.types.NetworkT",
 }
+autodoc_type_aliases = {}
+autodoc_mock_imports = [
+    "pettingzoo",
+    "pygame",
+]
 
 nitpicky = True
 nitpick_ignore = [

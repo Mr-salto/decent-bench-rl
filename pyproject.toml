@@ -27,6 +27,13 @@ Source = "https://github.com/team-decent/decent-bench"
 Issues = "https://github.com/team-decent/decent-bench/issues"
 
 [project.optional-dependencies]
+rl = [
+  "torch",
+  "torchvision",
+  "pettingzoo",
+  "pygame>=2.5",
+]
+
 dev = [
   "hatch",
   "mypy",
@@ -82,7 +89,7 @@ deps = [
 
 [tool.tox.env.sphinx]
 description = "Generate rst and html files using sphinx"
-deps = ["sphinx", "pydata-sphinx-theme"]
+deps = [".[rl]", "sphinx", "pydata-sphinx-theme"]
 commands = [
   ["sphinx-apidoc", "-o", "docs/source/api", "decent_bench", "--separate", "--no-toc", "--templatedir=docs/source/_templates"],
   ["sphinx-build", "-W", "-E", "-b", "html", "docs/source", "docs/build/html"]
