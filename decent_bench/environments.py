@@ -31,46 +31,43 @@ class PettingZooEnv:
 
     def __init__(
         self,
-        agents: list[RLAgent],
         env_factory: Callable[..., Any],
+        agents: list[RLAgent] | None = None,
         **env_kwargs: Any,  # noqa: ANN401
     ) -> None:
         """
         Initialize the PettingZoo wrapper and validate agent mapping.
 
         Args:
-            agents: a sequence of Agent instances.
+            agents: optional list of Agent instances. If omitted, call attach_agents(...)
+                before reset()/step().
             env_factory: a callable returning a PettingZoo ParallelEnv
                          (e.g., simple_spread_v3.parallel_env).
             **env_kwargs: keyword arguments forwarded to env_factory.
 
         Raises:
             AttributeError: if the environment exposes neither agents nor possible_agents.
-            ValueError: if the number of RL agents does not match environment agents.
 
         """
-        self.agents = list(agents)
+        self.agents: list[RLAgent] = []
 
         self.env = env_factory(**env_kwargs)
 
-        if hasattr(self.env, "agents"):
+        # Some Parallel envs expose `agents` but keep it empty before reset().
+        if hasattr(self.env, "agents") and self.env.agents:
             self.env_agent_names = list(self.env.agents)
         elif hasattr(self.env, "possible_agents"):
             self.env_agent_names = list(self.env.possible_agents)
+        elif hasattr(self.env, "agents"):
+            self.env_agent_names = list(self.env.agents)
         else:
             raise AttributeError(
                 "Environment object does not expose 'agents' or 'possible_agents'. "
                 "Pass a Parallel API env (env.agents) or an appropriate PettingZoo env."
             )
 
-        if len(self.agents) != len(self.env_agent_names):
-            raise ValueError(
-                f"Number of provided Agents ({len(self.agents)}) does not match "
-                f"environment agents ({len(self.env_agent_names)}: {self.env_agent_names})."
-            )
-
-        self.agent_to_env_name = dict(zip(self.agents, self.env_agent_names, strict=False))
-        self.env_name_to_agent = {name: agent for agent, name in self.agent_to_env_name.items()}
+        self.agent_to_env_name: dict[RLAgent, str] = {}
+        self.env_name_to_agent: dict[str, RLAgent] = {}
 
         try:
             self.observation_spaces = {name: self.env.observation_space(name) for name in self.env_agent_names}
@@ -84,6 +81,35 @@ class PettingZooEnv:
         self.last_dones: dict[str, bool] = {}
         self.last_infos: dict[str, dict[str, Any]] = {}
 
+        if agents is not None:
+            self.attach_agents(agents)
+
+    def attach_agents(self, agents: list[RLAgent]) -> None:
+        """
+        Attach RL agents to environment agent names.
+
+        Raises:
+            ValueError: if the number of RL agents does not match environment agents.
+
+        """
+        self.agents = list(agents)
+
+        if len(self.agents) != len(self.env_agent_names):
+            raise ValueError(
+                f"Number of provided Agents ({len(self.agents)}) does not match "
+                f"environment agents ({len(self.env_agent_names)}: {self.env_agent_names})."
+            )
+
+        self.agent_to_env_name = dict(zip(self.agents, self.env_agent_names, strict=False))
+        self.env_name_to_agent = {name: agent for agent, name in self.agent_to_env_name.items()}
+
+    def _require_attached_agents(self) -> None:
+        if not self.agent_to_env_name:
+            raise RuntimeError(
+                "PettingZooEnv has no attached agents. "
+                "Instantiate with agents=... or call attach_agents(...) before reset()/step()."
+            )
+
     def reset(self, **kwargs: Any) -> dict[RLAgent, Array]:  # noqa: ANN401
         """
         Reset the underlying PettingZoo environment.
@@ -92,6 +118,7 @@ class PettingZooEnv:
             A dict mapping Agent -> initial observation.
 
         """
+        self._require_attached_agents()
         # Parallel API returns a tuple of dicts: tuple[dict[AgentID, ObsType], dict[AgentID, dict]]
         obs, _info = self.env.reset(**kwargs)
         self.last_obs = {}
@@ -127,6 +154,7 @@ class PettingZooEnv:
             dict mapping Agent -> (obs, reward, done, info)
 
         """
+        self._require_attached_agents()
         env_actions = {
             self.agent_to_env_name[agent]: self._array_to_int(action) for agent, action in action_dict.items()
         }
