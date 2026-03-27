@@ -150,7 +150,9 @@ class RLAlgorithm(ABC):
             if not episode_done:
                 per_agent_returns = []
                 for agent in agents:
-                    per_agent_returns.append(agent.recent_returns[-1])
+                    per_agent_returns.append(agent.episode_return)
+                    agent.recent_returns.append(agent.episode_return)
+                    agent.reset_episode_counters()
                 mean_episode_returns.append(float(np.mean(per_agent_returns)))
                 self.on_episode_end(agents)
 

@@ -61,8 +61,8 @@ def _run_trial(
     alg = deepcopy(algorithm)
 
     agents = [RLAgent(i, action_space=None, observation_space=None, activation=AlwaysActive) for i in range(n_agents)]
-    env = PettingZooEnv(agents=agents, env_factory=env_factory)
-
+    env = PettingZooEnv(agents=agents, env_factory=env_factory, max_cycles=alg.episode_length - 1)
+    
     for agent in agents:
         env_name = env.agent_to_env_name[agent]
         agent.action_space = env.action_spaces[env_name]
