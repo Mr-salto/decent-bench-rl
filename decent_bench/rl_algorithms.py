@@ -150,9 +150,7 @@ class RLAlgorithm(ABC):
             if not episode_done:
                 per_agent_returns = []
                 for agent in agents:
-                    per_agent_returns.append(agent.episode_return)
-                    agent.recent_returns.append(agent.episode_return)
-                    agent.reset_episode_counters()
+                    per_agent_returns.append(agent.finalize_episode())
                 mean_episode_returns.append(float(np.mean(per_agent_returns)))
                 self.on_episode_end(agents)
 
@@ -410,8 +408,7 @@ class A2C(RLAlgorithm):
             agent.episode_length += 1
 
             if done:
-                agent.recent_returns.append(agent.episode_return)
-                agent.reset_episode_counters()
+                agent.finalize_episode()
 
     def on_step_update(self, _agents: list[RLAgent]) -> None:
         """A2C is on-policy; gradient updates are deferred to on_episode_end."""

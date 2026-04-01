@@ -10,16 +10,18 @@ class RLBenchmarkProblem:
     """
     RL benchmark problem describing environment setup.
 
+    The problem intentionally does not own training-loop settings such as
+    episode length or number of episodes.
+
     Args:
         env_factory: callable PettingZoo environment
         n_agents: number of agents in the environment
-        The problem intentionally does not own training-loop settings such as
-        episode length or number of episodes.
 
     """
 
     env_factory: Callable[..., Any]
     n_agents: int
+
 
 def create_simple_spread_problem(
     n_agents: int = 1,

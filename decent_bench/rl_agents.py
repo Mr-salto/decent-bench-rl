@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any
 
 import decent_bench.utils.interoperability as iop
@@ -107,6 +108,7 @@ class RLAgent(Agent):
         self.episode_return: float = 0.0
         self.episode_length: int = 0
         self.recent_returns: list[float] = []
+        self.episode_return_history: list[float] = []
 
         # RL-specific runtime state should not be stored in Agent.aux_vars because
         # Agent types aux_vars values as Array.
@@ -205,8 +207,7 @@ class RLAgent(Agent):
         self.episode_length += 1
 
         if done:
-            self.recent_returns.append(self.episode_return)
-            self.reset_episode_counters()
+            self.finalize_episode()
 
         return int(self.replay_buffer.size())
 
@@ -234,3 +235,35 @@ class RLAgent(Agent):
         """Reset per-episode counters (used when starting a new episode)."""
         self.episode_return = 0.0
         self.episode_length = 0
+
+    def finalize_episode(self) -> float:
+        """
+        Persist per-episode statistics and reset episode counters.
+
+        Returns:
+            The recorded episode return before counters are reset.
+
+        """
+        episode_return = float(self.episode_return)
+        self.recent_returns.append(episode_return)
+        self.episode_return_history.append(episode_return)
+        self.reset_episode_counters()
+        return episode_return
+
+
+@dataclass(frozen=True, eq=False)
+class RLAgentMetricsView:
+    """Immutable view of RL agent that exposes useful properties for calculating metrics."""
+
+    episode_return_history: list[float]
+    global_step: int
+    train_step: int
+
+    @staticmethod
+    def from_agent(agent: RLAgent) -> "RLAgentMetricsView":
+        """Create from agent."""
+        return RLAgentMetricsView(
+            episode_return_history=agent.episode_return_history,
+            global_step=agent.global_step,
+            train_step=agent.train_step,
+        )

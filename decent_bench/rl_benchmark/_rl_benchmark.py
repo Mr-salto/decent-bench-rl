@@ -6,7 +6,8 @@ from typing import Any
 from decent_bench.environments import PettingZooEnv
 from decent_bench.rl_agents import RLAgent
 from decent_bench.rl_algorithms import RLAlgorithm
-from decent_bench.rl_benchmark_problem import RLBenchmarkProblem
+from decent_bench.rl_benchmark._rl_benchmark_problem import RLBenchmarkProblem
+from decent_bench.rl_benchmark._rl_benchmark_result import RLBenchmarkResult
 from decent_bench.schemes import AlwaysActive
 from decent_bench.utils.logger import LOGGER
 from decent_bench.utils_rl.plot_return import plot_benchmark_mean_episode_returns
@@ -20,7 +21,7 @@ def benchmark(
     benchmark_problem: RLBenchmarkProblem,
     n_trials: int = 1,
     max_processes: int | None = 1,
-) -> dict[RLAlgorithm, list[tuple[list[RLAgent], list[float]]]]:
+) -> RLBenchmarkResult:
     """
     Benchmark MARL algorithms.
 
@@ -36,7 +37,7 @@ def benchmark(
 
     returns_by_algorithm = {alg.name: [trial_returns for _, trial_returns in trials] for alg, trials in result.items()}
     plot_benchmark_mean_episode_returns(returns_by_algorithm)
-    return result
+    return RLBenchmarkResult(problem=benchmark_problem, result=result)
 
 
 def _run_trials(
@@ -62,7 +63,7 @@ def _run_trial(
 
     agents = [RLAgent(i, action_space=None, observation_space=None, activation=AlwaysActive) for i in range(n_agents)]
     env = PettingZooEnv(agents=agents, env_factory=env_factory, max_cycles=alg.episode_length - 1)
-    
+
     for agent in agents:
         env_name = env.agent_to_env_name[agent]
         agent.action_space = env.action_spaces[env_name]
