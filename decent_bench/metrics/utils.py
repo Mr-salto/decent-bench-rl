@@ -102,7 +102,7 @@ def _gradient_norm(agents: Sequence[AgentMetricsView], iteration: int = -1) -> f
 
     Global gradient norm is defined as:
 
-    .. include:: snippets/global_gradient_optimality.rst
+    .. include:: /snippets/global_gradient_optimality.rst
     """
     mean_x = x_mean(tuple(agents), iteration)
     gradients = []

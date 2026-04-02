@@ -5,5 +5,3 @@ decent\_bench.metrics.utils
    :members:
    :show-inheritance:
    :undoc-members:
-   :exclude-members:
-      MetricProgressBar,

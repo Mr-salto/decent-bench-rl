@@ -65,8 +65,8 @@ class RLMeanEpisodeReturn(Metric):
         rl_agents = cast("Sequence[RLAgentMetricsView]", agents)
         n_eps = self._common_episode_count(rl_agents)
 
-        episode_means: list[float] = []
-        for ep in range(n_eps):
-            episode_returns = [agent.episode_return_history[ep] for agent in rl_agents]
-            episode_means.append(float(np.mean(episode_returns)))
+        episode_means = [
+            float(np.mean([agent.episode_return_history[ep] for agent in rl_agents]))
+            for ep in range(n_eps)
+        ]
         return [episode_means[-1]]

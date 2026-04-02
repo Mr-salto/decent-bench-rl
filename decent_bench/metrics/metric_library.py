@@ -27,7 +27,7 @@ class Regret(Metric):
 
     Global regret is defined as:
 
-    .. include:: snippets/global_cost_error.rst
+    .. include:: /snippets/global_cost_error.rst
 
     Note:
         Available only when ``problem.x_optimal`` is provided.
@@ -65,7 +65,7 @@ class GradientNorm(Metric):
 
     Gradient norm is defined as:
 
-    .. include:: snippets/global_gradient_optimality.rst
+    .. include:: /snippets/global_gradient_optimality.rst
 
     """
 

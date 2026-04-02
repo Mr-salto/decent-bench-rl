@@ -148,7 +148,7 @@ class Cost(ABC):
 
         The proximal operator is defined as:
 
-        .. include:: snippets/proximal_operator.rst
+        .. include:: /snippets/proximal_operator.rst
 
         If the cost function's proximal does not have a closed form solution, it can be solved iteratively using
         :meth:`~decent_bench.centralized_algorithms.proximal_solver`.

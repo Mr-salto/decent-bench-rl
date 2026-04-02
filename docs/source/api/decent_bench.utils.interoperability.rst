@@ -5,5 +5,3 @@ decent\_bench.utils.interoperability
    :members:
    :show-inheritance:
    :undoc-members:
-   :exclude-members:
-      ext

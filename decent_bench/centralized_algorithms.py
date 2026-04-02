@@ -278,7 +278,7 @@ def proximal_solver(cost: "Cost", y: Array, penalty: float, max_iter: int = 100)
 
     This is an approximate solution to the proximal operator defined as:
 
-    .. include:: snippets/proximal_operator.rst
+    .. include:: /snippets/proximal_operator.rst
 
     The cost must be differentiable, L-smooth, and convex.
 
