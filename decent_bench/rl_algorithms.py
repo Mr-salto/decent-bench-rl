@@ -163,7 +163,7 @@ class IndependentDQN(RLAlgorithm):
     """
     Independent DQN (IDQN) algorithm — each agent trains its own Q-network using its local replay buffer.
 
-    Each agent gets a DQNPolicy attached as agent.policy, which encapsulates the
+    Each agent gets a DQNPolicy attached to agent.policy, which encapsulates the
     online and target Q-networks together with epsilon-greedy action selection.
     RLAgent.act() calls policy.get_action_and_value() automatically.
 

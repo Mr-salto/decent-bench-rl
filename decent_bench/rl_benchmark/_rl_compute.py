@@ -1,4 +1,5 @@
 import logging
+from json import JSONDecodeError
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
@@ -15,7 +16,7 @@ from decent_bench.rl_metrics import RLMeanEpisodeReturn
 from decent_bench.utils import logger
 
 if TYPE_CHECKING:
-    from decent_bench.utils.checkpoint_manager import CheckpointManager
+    from decent_bench.utils_rl.rl_checkpoint_manager import RLCheckpointManager
 
 
 DEFAULT_RL_TABLE_METRICS: list[Metric] = [RLMeanEpisodeReturn(statistics=(np.average,))]
@@ -23,8 +24,8 @@ DEFAULT_RL_PLOT_METRICS: list[Metric] = [RLMeanEpisodeReturn(statistics=(np.aver
 
 
 def compute_metrics(
-    benchmark_result: RLBenchmarkResult,
-    checkpoint_manager: "CheckpointManager | None" = None,
+    benchmark_result: RLBenchmarkResult | None = None,
+    checkpoint_manager: "RLCheckpointManager | None" = None,
     *,
     table_metrics: list[Metric] = DEFAULT_RL_TABLE_METRICS,
     plot_metrics: list[Metric] | list[list[Metric]] = DEFAULT_RL_PLOT_METRICS,
@@ -40,18 +41,38 @@ def compute_metrics(
 
     Args:
         benchmark_result: result of an RL benchmark execution.
-        checkpoint_manager: if provided, will be used to save results of metrics computation and/or load benchmark
+        checkpoint_manager: if provided, will be used to save results of metrics computation and load benchmark
             result.
         table_metrics: metrics to tabulate as confidence intervals.
         plot_metrics: metrics to compute for plots.
         confidence_level: confidence level for table metrics.
         log_level: minimum log level.
 
+    Raises:
+        ValueError: If neither ``benchmark_result`` nor ``checkpoint_manager`` is provided, or
+            if the checkpoint manager does not contain a valid benchmark result to load.
+
     Returns:
         MetricResult containing computed table and plot metric data.
 
     """
     logger.start_logger(log_level=log_level)
+
+    if benchmark_result is None:
+        if checkpoint_manager is None:
+            raise ValueError(
+                "If ``benchmark_result`` is not provided, ``checkpoint_manager`` must be provided "
+                "to load the benchmark result from."
+            )
+        try:
+            benchmark_result = checkpoint_manager.load_benchmark_result()
+        except (FileNotFoundError, KeyError) as e:
+            raise ValueError(f"Invalid checkpoint directory: missing or corrupted metadata - {e}") from e
+        except JSONDecodeError as e:
+            raise ValueError(f"Invalid checkpoint directory: metadata is not valid JSON - {e}") from e
+
+        if len(benchmark_result.result) == 0:
+            raise ValueError("No benchmark result found in checkpoint manager to compute metrics")
 
     resulting_agent_states = {
         alg: [[RLAgentMetricsView.from_agent(agent) for agent in trial_agents] for trial_agents, _ in trials]

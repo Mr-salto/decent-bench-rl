@@ -1,8 +1,12 @@
 import warnings
+from collections import defaultdict
 from collections.abc import Callable
 from copy import deepcopy
-from typing import Any
+from json import JSONDecodeError
+from operator import itemgetter
+from typing import TYPE_CHECKING, Any
 
+import decent_bench.utils.interoperability as iop
 from decent_bench.environments import PettingZooEnv
 from decent_bench.rl_agents import RLAgent
 from decent_bench.rl_algorithms import RLAlgorithm
@@ -12,15 +16,90 @@ from decent_bench.schemes import AlwaysActive
 from decent_bench.utils.logger import LOGGER
 from decent_bench.utils_rl.plot_return import plot_benchmark_mean_episode_returns
 
+if TYPE_CHECKING:
+    from decent_bench.utils_rl.rl_checkpoint_manager import RLCheckpointManager
+
 HIDDEN_SIZES = (64, 64)
 DEVICE = "cpu"
+
+
+def resume_benchmark(
+    checkpoint_manager: "RLCheckpointManager",
+    increase_trials: int = 0,
+    create_backup: bool = True,
+    *,
+    max_processes: int | None = 1,
+) -> RLBenchmarkResult:
+    """
+    Resume an RL benchmark from an existing checkpoint directory.
+
+    Args:
+        checkpoint_manager: RLCheckpointManager instance to load checkpoints from.
+        increase_trials: number of additional trials to run for each algorithm.
+        create_backup: whether to create a backup of checkpoint directory before resuming.
+        max_processes: maximum number of parallel processes to use for running trials.
+
+    Returns:
+        RLBenchmarkResult containing resumed results.
+
+    Raises:
+        ValueError: if checkpoint directory is invalid or increase_trials is negative.
+
+    """
+    if not checkpoint_manager.checkpoint_dir.exists():
+        raise ValueError(f"Checkpoint directory '{checkpoint_manager.checkpoint_dir}' does not exist for resume")
+    if checkpoint_manager.is_empty():
+        raise ValueError(f"Checkpoint directory '{checkpoint_manager.checkpoint_dir}' is empty or invalid for resume")
+    if increase_trials < 0:
+        raise ValueError("increase_trials must be a non-negative integer")
+
+    try:
+        metadata = checkpoint_manager.load_metadata()
+        if metadata is None or "n_trials" not in metadata:
+            raise ValueError("Invalid or missing metadata in checkpoint directory")
+
+        algorithms = checkpoint_manager.load_initial_algorithms()
+        if algorithms is None:
+            raise ValueError("Initial algorithms not found in checkpoint metadata")
+
+        problem = checkpoint_manager.load_benchmark_problem()
+        if problem is None:
+            raise ValueError("Benchmark problem not found in checkpoint metadata")
+
+    except (FileNotFoundError, KeyError) as e:
+        raise ValueError(f"Invalid checkpoint directory: missing or corrupted metadata - {e}") from e
+    except JSONDecodeError as e:
+        raise ValueError(f"Invalid checkpoint directory: metadata is not valid JSON - {e}") from e
+
+    if create_backup:
+        checkpoint_manager.create_backup()
+
+    total_increase_trials = increase_trials + metadata.get("benchmark_metadata", {}).get("increased_trials", 0)
+    n_trials = metadata["n_trials"] + total_increase_trials
+    if increase_trials != 0:
+        checkpoint_manager.append_metadata({"increased_trials": total_increase_trials})
+
+    result = _run_trials(
+        algorithms,
+        n_trials,
+        n_agents=problem.n_agents,
+        env_factory=problem.env_factory,
+        max_processes=max_processes,
+        checkpoint_manager=checkpoint_manager,
+    )
+
+    returns_by_algorithm = {alg.name: [trial_returns for _, trial_returns in trials] for alg, trials in result.items()}
+    plot_benchmark_mean_episode_returns(returns_by_algorithm)
+    return RLBenchmarkResult(problem=problem, result=result)
 
 
 def benchmark(
     algorithms: list[RLAlgorithm],
     benchmark_problem: RLBenchmarkProblem,
+    *,
     n_trials: int = 1,
     max_processes: int | None = 1,
+    checkpoint_manager: "RLCheckpointManager | None" = None,
 ) -> RLBenchmarkResult:
     """
     Benchmark MARL algorithms.
@@ -31,33 +110,89 @@ def benchmark(
         n_trials: number of times to run each algorithm on the benchmark problem, running more trials improves the
             statistical results, at least 30 trials are recommended for the central limit theorem to apply
         max_processes: maximum number of parallel processes to use for running trials, set to None to use default
+        checkpoint_manager: if provided, saves and loads trial-level checkpoints during benchmark execution
+
+    Raises:
+        ValueError: If the checkpoint directory is not empty when initializing the CheckpointManager.
+
 
     """
-    result = _run_trials(algorithms, n_trials, benchmark_problem.n_agents, benchmark_problem.env_factory, max_processes)
+    if checkpoint_manager is not None:
+        if not checkpoint_manager.is_empty():
+            raise ValueError(
+                f"Checkpoint directory '{checkpoint_manager.checkpoint_dir}' is not empty. "
+                "Please provide an empty or non-existent directory to save checkpoints."
+            )
+        checkpoint_manager.initialize(algorithms=algorithms, problem=benchmark_problem, n_trials=n_trials)
+
+    result = _run_trials(
+        algorithms,
+        n_trials,
+        n_agents=benchmark_problem.n_agents,
+        env_factory=benchmark_problem.env_factory,
+        max_processes=max_processes,
+        checkpoint_manager=checkpoint_manager,
+    )
 
     returns_by_algorithm = {alg.name: [trial_returns for _, trial_returns in trials] for alg, trials in result.items()}
     plot_benchmark_mean_episode_returns(returns_by_algorithm)
     return RLBenchmarkResult(problem=benchmark_problem, result=result)
 
 
-def _run_trials(
+def _run_trials(  # noqa: PLR0917
     algorithms: list[RLAlgorithm],
     n_trials: int,
     n_agents: int,
     env_factory: Callable[..., Any],
     max_processes: int | None,
+    checkpoint_manager: "RLCheckpointManager | None" = None,
 ) -> dict[RLAlgorithm, list[tuple[list[RLAgent], list[float]]]]:
+    results: dict[RLAlgorithm, list[tuple[list[RLAgent], list[float]]]] = defaultdict(list)
 
-    if max_processes == 1:
-        result = {alg: [_run_trial(alg, env_factory, n_agents) for trial in range(n_trials)] for alg in algorithms}
-    return result
+    to_run: dict[RLAlgorithm, list[int]] = defaultdict(list)
+    if checkpoint_manager is not None:
+        for alg_idx, alg in enumerate(algorithms):
+            completed_trials = checkpoint_manager.get_completed_trials(alg_idx, n_trials)
+            incompleted_trials = [t for t in range(n_trials) if t not in completed_trials]
+            if len(incompleted_trials) > 0:
+                to_run[alg] = incompleted_trials
+
+            for trial in completed_trials:
+                _, loaded_agents, loaded_returns = checkpoint_manager.load_trial_result(alg_idx, trial)
+                results[alg].append((loaded_agents, loaded_returns))
+    else:
+        to_run = {alg: list(range(n_trials)) for alg in algorithms}
+
+    if max_processes != 1:
+        raise NotImplementedError("RL benchmark currently supports max_processes == 1 only")
+
+    for alg_idx, alg in enumerate(algorithms):
+        partial_result: list[tuple[int, tuple[list[RLAgent], list[float]]]] = []
+        for trial in to_run[alg]:
+            trained_alg, agents, mean_episode_returns = _run_trial(alg, env_factory, n_agents)
+            partial_result.append((trial, (agents, mean_episode_returns)))
+
+            if checkpoint_manager is not None:
+                checkpoint_manager.mark_trial_complete(
+                    alg_idx=alg_idx,
+                    trial=trial,
+                    algorithm=trained_alg,
+                    agents=agents,
+                    mean_episode_returns=mean_episode_returns,
+                    rng_state=iop.get_rng_state(),
+                )
+
+        sorted_trials = sorted(partial_result, key=itemgetter(0))
+        results[alg].extend([trial_result for _, trial_result in sorted_trials])
+
+    return dict(results)
 
 
 def _run_trial(
     algorithm: RLAlgorithm,
     env_factory: Callable[..., Any],
     n_agents: int,
-) -> tuple[list[RLAgent], list[float]]:
+) -> tuple[RLAlgorithm, list[RLAgent], list[float]]:
 
     alg = deepcopy(algorithm)
 
@@ -75,4 +210,4 @@ def _run_trial(
             mean_episode_returns = alg.run(agents, env)
         except Exception as e:
             LOGGER.exception(f"An error or warning occurred when running {alg.name}: {type(e).__name__}: {e}")
-    return agents, mean_episode_returns
+    return alg, agents, mean_episode_returns

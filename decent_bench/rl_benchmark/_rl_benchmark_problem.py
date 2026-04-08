@@ -19,6 +19,7 @@ class RLBenchmarkProblem:
 
     """
 
+    env_kind: str
     env_factory: Callable[..., Any]
     n_agents: int
 
@@ -42,6 +43,7 @@ def create_simple_spread_problem(
         )
 
     return RLBenchmarkProblem(
+        env_kind="simple_spread",
         env_factory=env_factory,
         n_agents=n_agents,
     )
@@ -68,6 +70,7 @@ def create_simple_adversary_problem(
         )
 
     return RLBenchmarkProblem(
+        env_kind="simple_adversary",
         env_factory=env_factory,
         n_agents=total_agents,
     )

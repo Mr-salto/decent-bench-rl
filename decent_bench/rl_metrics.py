@@ -66,7 +66,6 @@ class RLMeanEpisodeReturn(Metric):
         n_eps = self._common_episode_count(rl_agents)
 
         episode_means = [
-            float(np.mean([agent.episode_return_history[ep] for agent in rl_agents]))
-            for ep in range(n_eps)
+            float(np.mean([agent.episode_return_history[ep] for agent in rl_agents])) for ep in range(n_eps)
         ]
         return [episode_means[-1]]
