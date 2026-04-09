@@ -140,7 +140,14 @@ class RLAlgorithm(ABC):
                 self.on_step_update(agents)
 
                 if any(entry[2] for entry in results.values()):
-                    per_agent_returns = [agent.recent_returns[-1] for agent in agents]
+                    per_agent_returns = []
+                    for agent in agents:
+                        if agent.episode_length > 0:
+                            per_agent_returns.append(agent.finalize_episode())
+                        elif agent.recent_returns:
+                            per_agent_returns.append(agent.recent_returns[-1])
+                        else:
+                            per_agent_returns.append(agent.finalize_episode())
                     mean_episode_returns.append(float(np.mean(per_agent_returns)))
                     self.on_episode_end(agents)
                     episode_done = True

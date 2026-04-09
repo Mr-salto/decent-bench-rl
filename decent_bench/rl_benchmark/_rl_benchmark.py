@@ -19,9 +19,6 @@ from decent_bench.utils_rl.plot_return import plot_benchmark_mean_episode_return
 if TYPE_CHECKING:
     from decent_bench.utils_rl.rl_checkpoint_manager import RLCheckpointManager
 
-HIDDEN_SIZES = (64, 64)
-DEVICE = "cpu"
-
 
 def resume_benchmark(
     checkpoint_manager: "RLCheckpointManager",

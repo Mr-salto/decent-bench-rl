@@ -47,6 +47,8 @@ autodoc_type_aliases = {
 autodoc_mock_imports = [
     "pettingzoo",
     "pygame",
+    "torch",
+    "torchvision",
 ]
 
 nitpicky = True
@@ -55,6 +57,8 @@ nitpick_ignore = [
     ("py:class", "float64"),
     ("py:class", "numpy._typing._array_like._SupportsArray"),
     ("py:class", "numpy._typing._nested_sequence._NestedSequence"),
+    ("py:class", "torch.nn.Parameter"),
+    ("py:class", "torch.distributions.Categorical"),
     ("py:class", "NetworkT"),
     ("py:class", "Task"),
     ("py:class", "T"),

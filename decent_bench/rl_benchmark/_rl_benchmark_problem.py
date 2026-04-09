@@ -4,6 +4,8 @@ from typing import Any
 
 from pettingzoo.mpe import simple_adversary_v3, simple_spread_v3
 
+RENDER_MODE = "human"  # "human" | None
+
 
 @dataclass(eq=False)
 class RLBenchmarkProblem:
@@ -38,7 +40,7 @@ def create_simple_spread_problem(
     def env_factory(**env_kwargs: Any) -> Any:  # noqa: ANN401
         return simple_spread_v3.parallel_env(
             N=n_agents,
-            render_mode="human",
+            render_mode=RENDER_MODE,
             **env_kwargs,
         )
 
@@ -65,7 +67,7 @@ def create_simple_adversary_problem(
     def env_factory(**env_kwargs: Any) -> Any:  # noqa: ANN401
         return simple_adversary_v3.parallel_env(
             N=n_good_agents,
-            render_mode="human",
+            render_mode=RENDER_MODE,
             **env_kwargs,
         )
 

@@ -17,8 +17,8 @@ class RLBenchmarkResult:
     algorithm states, table results, and plot results.
 
     * `problem`: contains the definition of the benchmark problem that was executed.
-    * `states`: contains the final states of the algorithms after execution, organized by algorithm where
-      each algorithm maps to a sequence of agent list states (one per trial).
+    * `result`: contains the final results of the algorithms after execution, organized by algorithm where
+      each algorithm maps to a sequence of agent states list (one per trial) and mean episode returns.
 
     These results can be used to compute metrics after the benchmark run using
     :func:`~decent_bench.rl_benchmark.compute_metrics`.

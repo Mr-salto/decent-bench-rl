@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 from collections.abc import Callable, Iterator, Sequence
 
@@ -55,7 +57,7 @@ class BaseNetwork(nn.Module):
         """Expose internal torch module for optimizer creation."""
         return self._module
 
-    def copy_from(self, other: "BaseNetwork") -> None:
+    def copy_from(self, other: BaseNetwork) -> None:
         """
         Hard-copy parameters from another Network instance (must be torch-backed).
 

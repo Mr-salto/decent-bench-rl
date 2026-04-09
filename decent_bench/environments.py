@@ -47,6 +47,7 @@ class PettingZooEnv:
 
         Raises:
             AttributeError: if the environment exposes neither agents nor possible_agents.
+            RuntimeError: if action space / observation space initialization fails.
 
         """
         self.agents: list[RLAgent] = []
@@ -72,9 +73,8 @@ class PettingZooEnv:
         try:
             self.observation_spaces = {name: self.env.observation_space(name) for name in self.env_agent_names}
             self.action_spaces = {name: self.env.action_space(name) for name in self.env_agent_names}
-        except Exception:
-            self.observation_spaces = {}
-            self.action_spaces = {}
+        except Exception as e:
+            raise RuntimeError("Failed to initialize observation_spaces/action_spaces from the PettingZoo ") from e
 
         self.last_obs: dict[str, Any] = {}
         self.last_rewards: dict[str, float] = {}
