@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import decent_bench.utils.interoperability as iop
-from decent_bench.agents import Agent
+from decent_bench.agents import Agent # from decent_bench import agent
 from decent_bench.costs import Cost, SumCost
 from decent_bench.utils.array import Array
 from decent_bench.utils.types import SupportedDevices, SupportedFrameworks
@@ -59,7 +59,7 @@ class LinearDecreasingEpsilon:
         """Return epsilon value for the provided global step."""
         return max(0.05, 1 - step / 1000)
 
-
+# class RLAgent(agents.Agent):
 class RLAgent(Agent):
     """
     Algorithm-agnostic RL Agent.

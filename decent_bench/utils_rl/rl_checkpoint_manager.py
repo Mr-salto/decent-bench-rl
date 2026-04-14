@@ -244,7 +244,7 @@ class RLCheckpointManager:
             )
         elif env_kind == "simple_adversary":
             benchmark_problem = create_simple_adversary_problem(
-                n_good_agents=n_agents,
+                n_good_agents=n_agents - 1,
             )
         else:
             raise ValueError(f"Unknown ENV_NAME: {env_kind}")

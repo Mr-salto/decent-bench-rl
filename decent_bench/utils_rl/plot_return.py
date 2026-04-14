@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+from decent_bench.utils.logger import LOGGER
+
 
 def _align_trials_to_shortest(trial_returns: list[list[float]]) -> np.ndarray:
     """Convert trial return lists to a 2D array aligned by shortest trial length."""
@@ -53,6 +55,7 @@ def plot_benchmark_mean_episode_returns(
             )
 
     if not plotted_any:
+        LOGGER.warning("No valid return curves to plot; skipping plot generation")
         plt.close()
         return
 
@@ -63,3 +66,4 @@ def plot_benchmark_mean_episode_returns(
     plt.grid(visible=True)
     plt.tight_layout()
     plt.savefig(save_path)
+    LOGGER.info(f"Saved benchmark mean episode return plot to '{save_path}'")
