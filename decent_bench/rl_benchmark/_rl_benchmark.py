@@ -1,9 +1,13 @@
 import logging
+import random
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
 from json import JSONDecodeError
+from logging.handlers import QueueListener
+from multiprocessing import get_context
 from operator import itemgetter
 from typing import TYPE_CHECKING, Any
 
@@ -11,15 +15,25 @@ import decent_bench.utils.interoperability as iop
 from decent_bench.environments import PettingZooEnv
 from decent_bench.rl_agents import RLAgent
 from decent_bench.rl_algorithms import RLAlgorithm
-from decent_bench.rl_benchmark._rl_benchmark_problem import RLBenchmarkProblem
+from decent_bench.rl_benchmark._rl_benchmark_problem import (
+    RLBenchmarkProblem,
+    create_simple_adversary_problem,
+    create_simple_spread_problem,
+)
 from decent_bench.rl_benchmark._rl_benchmark_result import RLBenchmarkResult
 from decent_bench.schemes import AlwaysActive
 from decent_bench.utils import logger
+from decent_bench.utils.interoperability._rng import _set_seed
 from decent_bench.utils.logger import LOGGER
 from decent_bench.utils_rl.plot_return import plot_benchmark_mean_episode_returns
 
 if TYPE_CHECKING:
+    from multiprocessing.context import SpawnContext
+
     from decent_bench.utils_rl.rl_checkpoint_manager import RLCheckpointManager
+
+
+_SUPPORTED_MP_ENV_KINDS = {"simple_spread", "simple_adversary"}
 
 
 def resume_benchmark(
@@ -47,8 +61,6 @@ def resume_benchmark(
         ValueError: if checkpoint directory is invalid or increase_trials is negative.
 
     """
-    logger.start_logger(log_level=log_level)
-
     if not checkpoint_manager.checkpoint_dir.exists():
         raise ValueError(f"Checkpoint directory '{checkpoint_manager.checkpoint_dir}' does not exist for resume")
     if checkpoint_manager.is_empty():
@@ -77,6 +89,8 @@ def resume_benchmark(
     if create_backup:
         checkpoint_manager.create_backup()
 
+    log_listener, mp_context = _init_logging_and_multiprocessing(log_level, max_processes)
+
     LOGGER.info(
         f"Resuming RL benchmark from checkpoint '{checkpoint_manager.checkpoint_dir}' with "
         f"{metadata['n_trials']} trials and algorithms: {[alg.name for alg in algorithms]}"
@@ -97,11 +111,14 @@ def resume_benchmark(
     result = _run_trials(
         algorithms,
         n_trials,
-        n_agents=problem.n_agents,
-        env_factory=problem.env_factory,
+        problem=problem,
         max_processes=max_processes,
+        log_listener=log_listener,
+        mp_context=mp_context,
         checkpoint_manager=checkpoint_manager,
     )
+    if log_listener is not None:
+        log_listener.stop()
 
     returns_by_algorithm = {alg.name: [trial_returns for _, trial_returns in trials] for alg, trials in result.items()}
     plot_benchmark_mean_episode_returns(returns_by_algorithm)
@@ -135,7 +152,7 @@ def benchmark(
 
 
     """
-    logger.start_logger(log_level=log_level)
+    log_listener, mp_context = _init_logging_and_multiprocessing(log_level, max_processes)
 
     LOGGER.info("Starting benchmark execution")
     LOGGER.debug(f"Nr of agents: {benchmark_problem.n_agents}")
@@ -155,11 +172,14 @@ def benchmark(
     result = _run_trials(
         algorithms,
         n_trials,
-        n_agents=benchmark_problem.n_agents,
-        env_factory=benchmark_problem.env_factory,
+        problem=benchmark_problem,
         max_processes=max_processes,
+        log_listener=log_listener,
+        mp_context=mp_context,
         checkpoint_manager=checkpoint_manager,
     )
+    if log_listener is not None:
+        log_listener.stop()
 
     returns_by_algorithm = {alg.name: [trial_returns for _, trial_returns in trials] for alg, trials in result.items()}
     plot_benchmark_mean_episode_returns(returns_by_algorithm)
@@ -170,9 +190,10 @@ def benchmark(
 def _run_trials(  # noqa: PLR0917
     algorithms: list[RLAlgorithm],
     n_trials: int,
-    n_agents: int,
-    env_factory: Callable[..., Any],
+    problem: RLBenchmarkProblem,
     max_processes: int | None,
+    log_listener: QueueListener | None = None,
+    mp_context: "SpawnContext | None" = None,
     checkpoint_manager: "RLCheckpointManager | None" = None,
 ) -> dict[RLAlgorithm, list[tuple[list[RLAgent], list[float]]]]:
     results: dict[RLAlgorithm, list[tuple[list[RLAgent], list[float]]]] = defaultdict(list)
@@ -201,42 +222,73 @@ def _run_trials(  # noqa: PLR0917
         LOGGER.info("No trials are left to run!")
         return dict(results)
 
-    if max_processes != 1:
-        raise NotImplementedError("RL benchmark currently supports max_processes == 1 only")
+    if max_processes != 1 and problem.env_kind not in _SUPPORTED_MP_ENV_KINDS:
+        raise ValueError(
+            "Multiprocessing in RL benchmark currently supports built-in environment kinds "
+            "'simple_spread' and 'simple_adversary' only. "
+            "For custom env_factory, set max_processes=1."
+        )
 
-    for alg_idx, alg in enumerate(algorithms):
-        partial_result: list[tuple[int, tuple[list[RLAgent], list[float]]]] = []
-        for trial in to_run[alg]:
-            LOGGER.debug(f"Running trial {trial} for algorithm {alg.name}")
-            trained_alg, agents, mean_episode_returns = _run_trial(alg, env_factory, n_agents)
-            partial_result.append((trial, (agents, mean_episode_returns)))
+    trial_args = {
+        alg: [
+            (
+                alg,
+                problem.env_factory if max_processes == 1 else None,
+                problem.env_kind,
+                problem.n_agents,
+                trial,
+                alg_idx,
+                _derive_trial_seed(iop.get_seed(), alg_idx, trial),
+                checkpoint_manager,
+            )
+            for trial in to_run[alg]
+        ]
+        for alg_idx, alg in enumerate(algorithms)
+    }
 
-            if checkpoint_manager is not None:
-                checkpoint_manager.mark_trial_complete(
-                    alg_idx=alg_idx,
-                    trial=trial,
-                    algorithm=trained_alg,
-                    agents=agents,
-                    mean_episode_returns=mean_episode_returns,
-                    rng_state=iop.get_rng_state(),
-                )
+    if max_processes == 1:
+        partial_result = {alg: [_run_trial(*args) for args in trial_args[alg]] for alg in trial_args}
+    else:
+        if log_listener is None:
+            raise RuntimeError(
+                "Log listener must be initialized for multiprocessing to handle logs from worker processes"
+            )
 
-        sorted_trials = sorted(partial_result, key=itemgetter(0))
-        results[alg].extend([trial_result for _, trial_result in sorted_trials])
+        with ProcessPoolExecutor(
+            initializer=logger.start_queue_logger,
+            initargs=(log_listener.queue,),
+            max_workers=max_processes,
+            mp_context=mp_context,
+        ) as executor:
+            all_futures = {alg: [executor.submit(_run_trial, *args) for args in trial_args[alg]] for alg in trial_args}
+            partial_result = {alg: [f.result() for f in as_completed(futures)] for alg, futures in all_futures.items()}
+
+    for alg in partial_result:
+        sorted_trials = sorted(partial_result[alg], key=itemgetter(0))
+        results[alg].extend([trial_result[1] for trial_result in sorted_trials])
 
     return dict(results)
 
 
 def _run_trial(
     algorithm: RLAlgorithm,
-    env_factory: Callable[..., Any],
+    env_factory: Callable[..., Any] | None,
+    env_kind: str,
     n_agents: int,
-) -> tuple[RLAlgorithm, list[RLAgent], list[float]]:
+    trial: int,
+    alg_idx: int,
+    trial_seed: int,
+    checkpoint_manager: "RLCheckpointManager | None" = None,
+) -> tuple[int, tuple[list[RLAgent], list[float]]]:
+
+    _set_seed(trial_seed, set_global_seed=False)
 
     alg = deepcopy(algorithm)
 
+    trial_env_factory = env_factory if env_factory is not None else _get_env_factory(env_kind, n_agents)
+
     agents = [RLAgent(i, action_space=None, observation_space=None, activation=AlwaysActive) for i in range(n_agents)]
-    env = PettingZooEnv(agents=agents, env_factory=env_factory, max_cycles=alg.episode_length - 1)
+    env = PettingZooEnv(agents=agents, env_factory=trial_env_factory, max_cycles=alg.episode_length - 1)
 
     for agent in agents:
         env_name = env.agent_to_env_name[agent]
@@ -247,6 +299,71 @@ def _run_trial(
     with warnings.catch_warnings(action="error"):
         try:
             mean_episode_returns = alg.run(agents, env)
+            if checkpoint_manager is not None:
+                checkpoint_manager.mark_trial_complete(
+                    alg_idx=alg_idx,
+                    trial=trial,
+                    algorithm=alg,
+                    agents=agents,
+                    mean_episode_returns=mean_episode_returns,
+                    rng_state=iop.get_rng_state(),
+                )
         except Exception as e:
             LOGGER.exception(f"An error or warning occurred when running {alg.name}: {type(e).__name__}: {e}")
-    return alg, agents, mean_episode_returns
+
+    return trial, (agents, mean_episode_returns)
+
+
+def _init_logging_and_multiprocessing(
+    log_level: int,
+    max_processes: int | None,
+) -> tuple[QueueListener | None, "SpawnContext | None"]:
+    if max_processes == 1:
+        logger.start_logger(log_level)
+        return None, None
+
+    mp_context = get_context("spawn")
+    try:
+        manager = mp_context.Manager()
+    except RuntimeError as e:
+        if _is_multiprocessing_main_guard_error(e):
+            raise RuntimeError(
+                "Failed to start multiprocessing workers. Benchmark execution "
+                "must be launched inside a guarded main entrypoint. Wrap your benchmark call in:\n\n"
+                "if __name__ == '__main__':\n"
+                "    ... call decent_bench.rl_benchmark.benchmark(...)\n\n"
+                "This prevents child processes from re-running top-level script code during import."
+            ) from e
+        raise
+
+    log_listener = logger.start_log_listener(manager, log_level)
+    LOGGER.debug("Using spawn multiprocessing context for RL benchmark")
+    return log_listener, mp_context
+
+
+def _is_multiprocessing_main_guard_error(exc: RuntimeError) -> bool:
+    """Return True for the common spawn bootstrap error caused by missing main guard."""
+    msg = str(exc)
+    return "start a new process before the" in msg and "bootstrapping phase" in msg
+
+
+def _derive_trial_seed(base_seed: int | None, algorithm_index: int, trial: int) -> int:
+    """Derive a deterministic per-trial seed from a base seed."""
+    if base_seed is None:
+        base_seed = random.randint(0, 2**32 - 1)
+
+    return int((base_seed + 0x9E3779B9 * (algorithm_index + 1) + 0x85EBCA6B * (trial + 1)) % (2**32))
+
+
+def _get_env_factory(env_kind: str, n_agents: int) -> Callable[..., Any]:
+    if env_kind == "simple_spread":
+        return create_simple_spread_problem(n_agents=n_agents).env_factory
+    if env_kind == "simple_adversary":
+        if n_agents < 1:
+            raise ValueError(f"n_agents must be >= 1 for simple_adversary, got {n_agents}")
+        return create_simple_adversary_problem(n_good_agents=n_agents - 1).env_factory
+
+    raise ValueError(
+        "Unsupported env_kind for multiprocessing. "
+        "Supported kinds: 'simple_spread', 'simple_adversary'."
+    )
