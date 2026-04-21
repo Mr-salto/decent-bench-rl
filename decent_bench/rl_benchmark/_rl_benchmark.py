@@ -26,10 +26,20 @@ from decent_bench.utils import logger
 from decent_bench.utils.interoperability._rng import _set_seed
 from decent_bench.utils.logger import LOGGER
 from decent_bench.utils_rl.plot_return import plot_benchmark_mean_episode_returns
+from decent_bench.utils_rl.progress_bar import RLProgressBarController
+from decent_bench.utils_rl.runtime_metrics import (
+    prepare_trial_runtime_metrics,
+    start_runtime_metric_plotter,
+    update_trial_runtime_metrics,
+)
 
 if TYPE_CHECKING:
+    import queue
     from multiprocessing.context import SpawnContext
+    from multiprocessing.managers import SyncManager
 
+    from decent_bench.metrics import RuntimeMetric
+    from decent_bench.utils_rl.progress_bar import RLProgressBarHandle
     from decent_bench.utils_rl.rl_checkpoint_manager import RLCheckpointManager
 
 
@@ -42,6 +52,10 @@ def resume_benchmark(
     create_backup: bool = True,
     *,
     max_processes: int | None = 1,
+    progress_step: int | None = 1,
+    show_speed: bool = False,
+    show_trial: bool = False,
+    runtime_metrics: "list[RuntimeMetric] | None" = None,
     log_level: int = logging.INFO,
 ) -> RLBenchmarkResult:
     """
@@ -52,6 +66,11 @@ def resume_benchmark(
         increase_trials: number of additional trials to run for each algorithm.
         create_backup: whether to create a backup of checkpoint directory before resuming.
         max_processes: maximum number of parallel processes to use for running trials.
+        progress_step: if provided, progress updates every ``progress_step`` episodes.
+            If ``None``, progress is updated once per trial at final episode.
+        show_speed: whether to show speed in the progress bar.
+        show_trial: whether to show active trial information in the progress bar.
+        runtime_metrics: optional list of runtime metrics to compute and plot while training.
         log_level: minimum level to log, e.g. :data:`logging.INFO`.
 
     Returns:
@@ -89,7 +108,7 @@ def resume_benchmark(
     if create_backup:
         checkpoint_manager.create_backup()
 
-    log_listener, mp_context = _init_logging_and_multiprocessing(log_level, max_processes)
+    log_listener, manager, mp_context = _init_logging_and_multiprocessing(log_level, max_processes)
 
     LOGGER.info(
         f"Resuming RL benchmark from checkpoint '{checkpoint_manager.checkpoint_dir}' with "
@@ -108,14 +127,22 @@ def resume_benchmark(
     LOGGER.info("Resuming benchmark execution")
     LOGGER.debug(f"Nr of agents: {problem.n_agents}")
 
+    if runtime_metrics is not None and len(runtime_metrics) == 0:
+        runtime_metrics = None
+
     result = _run_trials(
         algorithms,
         n_trials,
         problem=problem,
+        manager=manager,
         max_processes=max_processes,
+        progress_step=progress_step,
+        show_speed=show_speed,
+        show_trial=show_trial,
         log_listener=log_listener,
         mp_context=mp_context,
         checkpoint_manager=checkpoint_manager,
+        runtime_metrics=runtime_metrics,
     )
     if log_listener is not None:
         log_listener.stop()
@@ -132,7 +159,11 @@ def benchmark(
     *,
     n_trials: int = 1,
     max_processes: int | None = 1,
+    progress_step: int | None = 1,
+    show_speed: bool = True,
+    show_trial: bool = True,
     checkpoint_manager: "RLCheckpointManager | None" = None,
+    runtime_metrics: "list[RuntimeMetric] | None" = None,
     log_level: int = logging.INFO,
 ) -> RLBenchmarkResult:
     """
@@ -144,7 +175,12 @@ def benchmark(
         n_trials: number of times to run each algorithm on the benchmark problem, running more trials improves the
             statistical results, at least 30 trials are recommended for the central limit theorem to apply
         max_processes: maximum number of parallel processes to use for running trials, set to None to use default
+        progress_step: if provided, progress updates every ``progress_step`` episodes.
+            If ``None``, progress is updated once per trial at final episode.
+        show_speed: whether to show speed in the progress bar.
+        show_trial: whether to show active trial information in the progress bar.
         checkpoint_manager: if provided, saves and loads trial-level checkpoints during benchmark execution
+        runtime_metrics: optional list of runtime metrics to compute and plot while training.
         log_level: minimum level to log, e.g. :data:`logging.INFO`.
 
     Raises:
@@ -152,10 +188,14 @@ def benchmark(
 
 
     """
-    log_listener, mp_context = _init_logging_and_multiprocessing(log_level, max_processes)
+    log_listener, manager, mp_context = _init_logging_and_multiprocessing(log_level, max_processes)
 
     LOGGER.info("Starting benchmark execution")
     LOGGER.debug(f"Nr of agents: {benchmark_problem.n_agents}")
+
+    if runtime_metrics is not None and len(runtime_metrics) == 0:
+        runtime_metrics = None
+
     if checkpoint_manager is not None:
         if not checkpoint_manager.is_empty():
             raise ValueError(
@@ -173,10 +213,15 @@ def benchmark(
         algorithms,
         n_trials,
         problem=benchmark_problem,
+        manager=manager,
         max_processes=max_processes,
+        progress_step=progress_step,
+        show_speed=show_speed,
+        show_trial=show_trial,
         log_listener=log_listener,
         mp_context=mp_context,
         checkpoint_manager=checkpoint_manager,
+        runtime_metrics=runtime_metrics,
     )
     if log_listener is not None:
         log_listener.stop()
@@ -191,12 +236,22 @@ def _run_trials(  # noqa: PLR0917
     algorithms: list[RLAlgorithm],
     n_trials: int,
     problem: RLBenchmarkProblem,
+    manager: "SyncManager | None",
     max_processes: int | None,
+    progress_step: int | None,
+    show_speed: bool,
+    show_trial: bool,
     log_listener: QueueListener | None = None,
     mp_context: "SpawnContext | None" = None,
     checkpoint_manager: "RLCheckpointManager | None" = None,
+    runtime_metrics: "list[RuntimeMetric] | None" = None,
 ) -> dict[RLAlgorithm, list[tuple[list[RLAgent], list[float]]]]:
     results: dict[RLAlgorithm, list[tuple[list[RLAgent], list[float]]]] = defaultdict(list)
+
+    runtime_plotter, runtime_plotter_queue = start_runtime_metric_plotter(runtime_metrics, mp_context)
+
+    prog_ctrl = RLProgressBarController(manager, algorithms, n_trials, progress_step, show_speed, show_trial)
+    progress_bar_handle = prog_ctrl.get_handle()
 
     to_run: dict[RLAlgorithm, list[int]] = defaultdict(list)
     if checkpoint_manager is not None:
@@ -209,6 +264,7 @@ def _run_trials(  # noqa: PLR0917
             for trial in completed_trials:
                 _, loaded_agents, loaded_returns = checkpoint_manager.load_trial_result(alg_idx, trial)
                 results[alg].append((loaded_agents, loaded_returns))
+                prog_ctrl.mark_one_trial_as_complete(alg, trial)
                 LOGGER.debug(f"Loaded completed trial {trial} for algorithm {alg.name} from checkpoint")
     else:
         to_run = {alg: list(range(n_trials)) for alg in algorithms}
@@ -239,7 +295,10 @@ def _run_trials(  # noqa: PLR0917
                 trial,
                 alg_idx,
                 _derive_trial_seed(iop.get_seed(), alg_idx, trial),
+                progress_bar_handle,
                 checkpoint_manager,
+                runtime_metrics,
+                runtime_plotter_queue,
             )
             for trial in to_run[alg]
         ]
@@ -267,10 +326,14 @@ def _run_trials(  # noqa: PLR0917
         sorted_trials = sorted(partial_result[alg], key=itemgetter(0))
         results[alg].extend([trial_result[1] for trial_result in sorted_trials])
 
+    # Clean up runtime plotter process
+    if runtime_plotter is not None:
+        runtime_plotter.shutdown()
+
     return dict(results)
 
 
-def _run_trial(
+def _run_trial(  # noqa: PLR0917
     algorithm: RLAlgorithm,
     env_factory: Callable[..., Any] | None,
     env_kind: str,
@@ -278,7 +341,10 @@ def _run_trial(
     trial: int,
     alg_idx: int,
     trial_seed: int,
+    progress_bar_handle: "RLProgressBarHandle",
     checkpoint_manager: "RLCheckpointManager | None" = None,
+    runtime_metrics: "list[RuntimeMetric] | None" = None,
+    runtime_plotter_queue: "queue.Queue[Any] | None" = None,
 ) -> tuple[int, tuple[list[RLAgent], list[float]]]:
 
     _set_seed(trial_seed, set_global_seed=False)
@@ -295,10 +361,19 @@ def _run_trial(
         agent.action_space = env.action_spaces[env_name]
         agent.observation_space = env.observation_spaces[env_name]
 
+    progress_bar_handle.start_progress_bar(algorithm, trial, 0)
+
+    trial_runtime_metrics = prepare_trial_runtime_metrics(runtime_metrics, alg.name, trial, runtime_plotter_queue)
+    trial_problem = RLBenchmarkProblem(env_kind=env_kind, env_factory=trial_env_factory, n_agents=n_agents)
+
+    def episode_callback(episode: int) -> None:
+        progress_bar_handle.advance_progress_bar(algorithm, episode)
+        update_trial_runtime_metrics(trial_runtime_metrics, trial_problem, agents, episode, alg.episodes)
+
     mean_episode_returns = []
     with warnings.catch_warnings(action="error"):
         try:
-            mean_episode_returns = alg.run(agents, env)
+            mean_episode_returns = alg.run(agents, env, episode_callback=episode_callback)
             if checkpoint_manager is not None:
                 checkpoint_manager.mark_trial_complete(
                     alg_idx=alg_idx,
@@ -317,10 +392,10 @@ def _run_trial(
 def _init_logging_and_multiprocessing(
     log_level: int,
     max_processes: int | None,
-) -> tuple[QueueListener | None, "SpawnContext | None"]:
+) -> tuple[QueueListener | None, "SyncManager | None", "SpawnContext | None"]:
     if max_processes == 1:
         logger.start_logger(log_level)
-        return None, None
+        return None, None, None
 
     mp_context = get_context("spawn")
     try:
@@ -338,7 +413,7 @@ def _init_logging_and_multiprocessing(
 
     log_listener = logger.start_log_listener(manager, log_level)
     LOGGER.debug("Using spawn multiprocessing context for RL benchmark")
-    return log_listener, mp_context
+    return log_listener, manager, mp_context
 
 
 def _is_multiprocessing_main_guard_error(exc: RuntimeError) -> bool:
@@ -363,7 +438,4 @@ def _get_env_factory(env_kind: str, n_agents: int) -> Callable[..., Any]:
             raise ValueError(f"n_agents must be >= 1 for simple_adversary, got {n_agents}")
         return create_simple_adversary_problem(n_good_agents=n_agents - 1).env_factory
 
-    raise ValueError(
-        "Unsupported env_kind for multiprocessing. "
-        "Supported kinds: 'simple_spread', 'simple_adversary'."
-    )
+    raise ValueError("Unsupported env_kind for multiprocessing. Supported kinds: 'simple_spread', 'simple_adversary'.")

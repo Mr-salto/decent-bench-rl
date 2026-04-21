@@ -62,6 +62,7 @@ nitpick_ignore = [
     ("py:class", "NetworkT"),
     ("py:class", "Task"),
     ("py:class", "T"),
+    ("py:class", "SyncManager"),
 ]
 
 suppress_warnings = ["toc.duplicate"]

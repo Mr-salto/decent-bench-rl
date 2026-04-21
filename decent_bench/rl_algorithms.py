@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, final
 
@@ -95,7 +96,12 @@ class RLAlgorithm(ABC):
         env.close()
 
     @final
-    def run(self, agents: list[RLAgent], env: PettingZooEnv) -> list[float]:
+    def run(  # noqa: PLR0912
+        self,
+        agents: list[RLAgent],
+        env: PettingZooEnv,
+        episode_callback: Callable[[int], None] | None = None,
+    ) -> list[float]:
         """
         Run the algorithm.
 
@@ -112,6 +118,8 @@ class RLAlgorithm(ABC):
         Args:
             agents: provides agents
             env: environment to run the algorithm on.
+            episode_callback: optional callback invoked when an episode is finalized.
+                Receives the 0-based episode index.
 
         Raises:
             RuntimeError: if any agent does not have an observation before action selection.
@@ -150,6 +158,8 @@ class RLAlgorithm(ABC):
                             per_agent_returns.append(agent.finalize_episode())
                     mean_episode_returns.append(float(np.mean(per_agent_returns)))
                     self.on_episode_end(agents)
+                    if episode_callback is not None:
+                        episode_callback(_episode)
                     episode_done = True
                     break
 
@@ -160,6 +170,8 @@ class RLAlgorithm(ABC):
                     per_agent_returns.append(agent.finalize_episode())
                 mean_episode_returns.append(float(np.mean(per_agent_returns)))
                 self.on_episode_end(agents)
+                if episode_callback is not None:
+                    episode_callback(_episode)
 
         self.finalize(agents, env)
         return mean_episode_returns

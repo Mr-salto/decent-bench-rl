@@ -3,13 +3,14 @@ from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
-from decent_bench.agents import AgentMetricsView
-from decent_bench.metrics import Metric, X, Y
+from decent_bench.agents import Agent, AgentMetricsView
+from decent_bench.metrics import Metric, RuntimeMetric, X, Y
 from decent_bench.metrics._metric import Statistic
 from decent_bench.rl_agents import RLAgentMetricsView
 
 if TYPE_CHECKING:
     from decent_bench.benchmark import BenchmarkProblem
+    from decent_bench.rl_agents import RLAgent
 
 
 class RLMeanEpisodeReturn(Metric):
@@ -69,3 +70,25 @@ class RLMeanEpisodeReturn(Metric):
             float(np.mean([agent.episode_return_history[ep] for agent in rl_agents])) for ep in range(n_eps)
         ]
         return [episode_means[-1]]
+
+
+class RuntimeMeanEpisodeReturn(RuntimeMetric):
+    """Runtime mean episode return aggregated across all RL agents."""
+
+    description = "Mean Episode Return"
+    x_log = False
+    y_log = False
+
+    def compute(self, _problem: "BenchmarkProblem", agents: Sequence[Agent], episode: int) -> float:  # noqa: D102
+        rl_agents = cast("Sequence[RLAgent]", agents)
+        returns = []
+        for agent in rl_agents:
+            if episode < len(agent.episode_return_history):
+                returns.append(float(agent.episode_return_history[episode]))
+            elif agent.episode_return_history:
+                returns.append(float(agent.episode_return_history[-1]))
+
+        if len(returns) == 0:
+            return float("nan")
+
+        return float(np.mean(returns))
