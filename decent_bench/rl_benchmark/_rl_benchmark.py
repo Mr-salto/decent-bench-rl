@@ -2,7 +2,6 @@ import logging
 import random
 import warnings
 from collections import defaultdict
-from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
 from json import JSONDecodeError
@@ -12,16 +11,10 @@ from operator import itemgetter
 from typing import TYPE_CHECKING, Any
 
 import decent_bench.utils.interoperability as iop
-from decent_bench.environments import PettingZooEnv
 from decent_bench.rl_agents import RLAgent
 from decent_bench.rl_algorithms import RLAlgorithm
-from decent_bench.rl_benchmark._rl_benchmark_problem import (
-    RLBenchmarkProblem,
-    create_simple_adversary_problem,
-    create_simple_spread_problem,
-)
+from decent_bench.rl_benchmark._rl_benchmark_problem import RLBenchmarkProblem
 from decent_bench.rl_benchmark._rl_benchmark_result import RLBenchmarkResult
-from decent_bench.schemes import AlwaysActive
 from decent_bench.utils import logger
 from decent_bench.utils.interoperability._rng import _set_seed
 from decent_bench.utils.logger import LOGGER
@@ -282,16 +275,14 @@ def _run_trials(  # noqa: PLR0917
         raise ValueError(
             "Multiprocessing in RL benchmark currently supports built-in environment kinds "
             "'simple_spread' and 'simple_adversary' only. "
-            "For custom env_factory, set max_processes=1."
+            "For custom env_kind, set max_processes=1."
         )
 
     trial_args = {
         alg: [
             (
                 alg,
-                problem.env_factory if max_processes == 1 else None,
-                problem.env_kind,
-                problem.n_agents,
+                problem,
                 trial,
                 alg_idx,
                 _derive_trial_seed(iop.get_seed(), alg_idx, trial),
@@ -335,9 +326,7 @@ def _run_trials(  # noqa: PLR0917
 
 def _run_trial(  # noqa: PLR0917
     algorithm: RLAlgorithm,
-    env_factory: Callable[..., Any] | None,
-    env_kind: str,
-    n_agents: int,
+    problem: RLBenchmarkProblem,
     trial: int,
     alg_idx: int,
     trial_seed: int,
@@ -351,10 +340,13 @@ def _run_trial(  # noqa: PLR0917
 
     alg = deepcopy(algorithm)
 
-    trial_env_factory = env_factory if env_factory is not None else _get_env_factory(env_kind, n_agents)
+    agents = deepcopy(problem.agents)
+    if len(agents) != problem.n_agents:
+        raise ValueError(
+            f"Problem n_agents ({problem.n_agents}) does not match number of template agents ({len(agents)})."
+        )
 
-    agents = [RLAgent(i, action_space=None, observation_space=None, activation=AlwaysActive) for i in range(n_agents)]
-    env = PettingZooEnv(agents=agents, env_factory=trial_env_factory, max_cycles=alg.episode_length - 1)
+    env = problem.create_env(agents=agents)
 
     for agent in agents:
         env_name = env.agent_to_env_name[agent]
@@ -364,11 +356,10 @@ def _run_trial(  # noqa: PLR0917
     progress_bar_handle.start_progress_bar(algorithm, trial, 0)
 
     trial_runtime_metrics = prepare_trial_runtime_metrics(runtime_metrics, alg.name, trial, runtime_plotter_queue)
-    trial_problem = RLBenchmarkProblem(env_kind=env_kind, env_factory=trial_env_factory, n_agents=n_agents)
 
     def episode_callback(episode: int) -> None:
         progress_bar_handle.advance_progress_bar(algorithm, episode)
-        update_trial_runtime_metrics(trial_runtime_metrics, trial_problem, agents, episode, alg.episodes)
+        update_trial_runtime_metrics(trial_runtime_metrics, problem, agents, episode, alg.episodes)
 
     mean_episode_returns = []
     with warnings.catch_warnings(action="error"):
@@ -428,14 +419,3 @@ def _derive_trial_seed(base_seed: int | None, algorithm_index: int, trial: int) 
         base_seed = random.randint(0, 2**32 - 1)
 
     return int((base_seed + 0x9E3779B9 * (algorithm_index + 1) + 0x85EBCA6B * (trial + 1)) % (2**32))
-
-
-def _get_env_factory(env_kind: str, n_agents: int) -> Callable[..., Any]:
-    if env_kind == "simple_spread":
-        return create_simple_spread_problem(n_agents=n_agents).env_factory
-    if env_kind == "simple_adversary":
-        if n_agents < 1:
-            raise ValueError(f"n_agents must be >= 1 for simple_adversary, got {n_agents}")
-        return create_simple_adversary_problem(n_good_agents=n_agents - 1).env_factory
-
-    raise ValueError("Unsupported env_kind for multiprocessing. Supported kinds: 'simple_spread', 'simple_adversary'.")

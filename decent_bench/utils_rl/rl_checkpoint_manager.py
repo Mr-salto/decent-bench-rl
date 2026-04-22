@@ -12,8 +12,6 @@ from decent_bench.rl_algorithms import RLAlgorithm
 from decent_bench.rl_benchmark import (
     RLBenchmarkProblem,
     RLBenchmarkResult,
-    create_simple_adversary_problem,
-    create_simple_spread_problem,
 )
 from decent_bench.utils.logger import LOGGER
 
@@ -163,7 +161,7 @@ class RLCheckpointManager:
         # Save initial state and metadata for resuming later if needed
         self._save_metadata(metadata)
         self._save_initial_algorithms(algorithms)
-        self._save_benchmark_problem(problem.n_agents, problem.env_kind)
+        self._save_benchmark_problem(problem)
 
         # Create algorithm directories
         for idx in range(len(algorithms)):
@@ -232,23 +230,34 @@ class RLCheckpointManager:
             BenchmarkProblem object representing the benchmark problem configuration.
 
         Raises:
-            ValueError: If the stored environment kind is unknown.
+            ValueError: If the benchmark problem payload is invalid.
 
         """
         problem_path = self.checkpoint_dir / "benchmark_problem.pkl"
         with problem_path.open("rb") as f:
-            n_agents, env_kind = pickle.load(f)  # noqa: S301
-        if env_kind == "simple_spread":
-            benchmark_problem = create_simple_spread_problem(
-                n_agents=n_agents,
+            payload = pickle.load(f)  # noqa: S301
+
+        required_keys = ("env_kind", "n_agents", "env_config", "agents")
+        missing_keys = [key for key in required_keys if key not in payload]
+        if missing_keys:
+            raise ValueError(f"Invalid benchmark problem payload: missing keys {missing_keys}")
+
+        env_kind = payload["env_kind"]
+        n_agents = int(payload["n_agents"])
+        env_config = dict(payload["env_config"])
+        agents = payload["agents"]
+
+        if len(agents) != n_agents:
+            raise ValueError(
+                f"Corrupted benchmark problem: n_agents is {n_agents} but serialized agents has {len(agents)} entries"
             )
-        elif env_kind == "simple_adversary":
-            benchmark_problem = create_simple_adversary_problem(
-                n_good_agents=n_agents - 1,
-            )
-        else:
-            raise ValueError(f"Unknown ENV_NAME: {env_kind}")
-        return benchmark_problem
+
+        return RLBenchmarkProblem(
+            env_kind=env_kind,
+            n_agents=n_agents,
+            agents=agents,
+            env_config=env_config,
+        )
 
     def save_checkpoint(
         self,
@@ -583,11 +592,17 @@ class RLCheckpointManager:
             pickle.dump(algorithms, f)
         LOGGER.debug(f"Saved initial algorithms to {initial_path}")
 
-    def _save_benchmark_problem(self, n_agents: int, env_kind: str) -> None:
-        """Save benchmark problem configuration."""
+    def _save_benchmark_problem(self, problem: RLBenchmarkProblem) -> None:
+        """Save benchmark problem configuration metadata for deterministic reconstruction."""
         problem_path = self.checkpoint_dir / "benchmark_problem.pkl"
+        payload = {
+            "env_kind": problem.env_kind,
+            "n_agents": problem.n_agents,
+            "env_config": problem.env_config,
+            "agents": problem.agents,
+        }
         with problem_path.open("wb") as f:
-            pickle.dump((n_agents, env_kind), f)
+            pickle.dump(payload, f)
         LOGGER.debug(f"Saved benchmark problem to {problem_path}")
 
     def _cleanup_old_checkpoints(self, alg_idx: int, trial: int) -> None:
