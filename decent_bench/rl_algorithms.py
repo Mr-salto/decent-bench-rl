@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, final
+from typing import final
 
 import numpy as np
 import torch
@@ -9,13 +9,11 @@ from torch.nn import functional
 from torch.nn.utils import clip_grad_norm_
 
 import decent_bench.utils.interoperability as iop
-from decent_bench.environments import PettingZooEnv
+from decent_bench.environments import PettingZooEnv, StepResult
 from decent_bench.rl_agents import LinearDecreasingEpsilon, RLAgent
 from decent_bench.utils.types import SupportedDevices
 from decent_bench.utils_rl.q_networks import ActorCritic, DQNPolicy
 from decent_bench.utils_rl.replay_buffer import RolloutBuffer, SimpleReplayBuffer
-
-StepResult = tuple[Any, float, bool, dict[str, Any]]
 
 
 class RLAlgorithm(ABC):
@@ -96,7 +94,7 @@ class RLAlgorithm(ABC):
         env.close()
 
     @final
-    def run(  # noqa: PLR0912
+    def run(
         self,
         agents: list[RLAgent],
         env: PettingZooEnv,
@@ -108,7 +106,7 @@ class RLAlgorithm(ABC):
         Note:
             This method first calls :meth:`initialize`, then runs the episode loop by repeatedly calling
             :meth:`on_step_collect`, :meth:`on_step_update` and :meth:`on_episode_end`. Finally calls :meth:`finalize`.
-            Relies on transition collection to increment ``agent.global_step``.
+            Relies on the environment to own generic step accounting and episode finalization.
 
         Warning:
             Do not override this method. Instead, override lifecycle hooks such as
@@ -141,22 +139,16 @@ class RLAlgorithm(ABC):
                     action = agent.act(obs=obs[agent], deterministic=False)
                     action_dict[agent] = action
 
-                results = env.step(action_dict)
+                results, episode_done, mean_episode_return = env.step(action_dict)
 
                 self.on_step_collect(agents, results)
 
                 self.on_step_update(agents)
 
-                if any(entry[2] for entry in results.values()):
-                    per_agent_returns = []
-                    for agent in agents:
-                        if agent.episode_length > 0:
-                            per_agent_returns.append(agent.finalize_episode())
-                        elif agent.recent_returns:
-                            per_agent_returns.append(agent.recent_returns[-1])
-                        else:
-                            per_agent_returns.append(agent.finalize_episode())
-                    mean_episode_returns.append(float(np.mean(per_agent_returns)))
+                if episode_done:
+                    if mean_episode_return is None:
+                        raise RuntimeError("Environment returned episode_done=True without mean_episode_return.")
+                    mean_episode_returns.append(float(mean_episode_return))
                     self.on_episode_end(agents)
                     if episode_callback is not None:
                         episode_callback(_episode)
@@ -165,9 +157,7 @@ class RLAlgorithm(ABC):
 
             # Append returns for episodes that end due to N_STEPS reaching max and not due to agents being done
             if not episode_done:
-                per_agent_returns = []
-                for agent in agents:
-                    per_agent_returns.append(agent.finalize_episode())
+                per_agent_returns = [agent.finalize_episode() for agent in agents]
                 mean_episode_returns.append(float(np.mean(per_agent_returns)))
                 self.on_episode_end(agents)
                 if episode_callback is not None:
@@ -420,14 +410,6 @@ class A2C(RLAlgorithm):
             value_t = float(agent.last_value or 0.0)
 
             agent.rollout_buffer.add(obs_t, action_t, reward, done, logprob_t, value_t)
-
-            # Update per-step episode tracking (mirrors store_transition for replay buffers)
-            agent.global_step += 1
-            agent.episode_return += float(reward)
-            agent.episode_length += 1
-
-            if done:
-                agent.finalize_episode()
 
     def on_step_update(self, _agents: list[RLAgent]) -> None:
         """A2C is on-policy; gradient updates are deferred to on_episode_end."""

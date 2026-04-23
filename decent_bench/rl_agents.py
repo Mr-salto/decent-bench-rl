@@ -203,13 +203,6 @@ class RLAgent(Agent):
         transition = (obs_array, action, reward, next_obs_array, done, info)
         self.replay_buffer.add(transition)
 
-        self.global_step += 1
-        self.episode_return += float(reward)
-        self.episode_length += 1
-
-        if done:
-            self.finalize_episode()
-
         return int(self.replay_buffer.size())
 
     def attach_policy(self, policy: BaseNetwork) -> None:

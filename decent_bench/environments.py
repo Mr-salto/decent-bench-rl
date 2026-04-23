@@ -16,6 +16,8 @@ try:
 except Exception:
     TORCH_AVAILABLE = False
 
+StepResult = tuple[Array | None, float, bool, dict[str, Any]]
+
 
 class PettingZooEnv:
     """
@@ -125,6 +127,8 @@ class PettingZooEnv:
         self.last_rewards = dict.fromkeys(self.env_agent_names, 0.0)
         self.last_dones = dict.fromkeys(self.env_agent_names, False)
         self.last_infos = {name: {} for name in self.env_agent_names}
+        for agent in self.agents:
+            agent.done = False
 
         agent_obs: dict[RLAgent, Array] = {}
         for env_name, observation in obs.items():
@@ -143,7 +147,7 @@ class PettingZooEnv:
     def step(  # noqa: PLR0914
         self,
         action_dict: Mapping[RLAgent, int | Array],
-    ) -> dict[RLAgent, tuple[Array | None, float, bool, dict[str, Any]]]:
+    ) -> tuple[dict[RLAgent, StepResult], bool, float | None]:
         """
         Take a step in the underlying PettingZoo environment.
 
@@ -151,7 +155,7 @@ class PettingZooEnv:
             action_dict: dict mapping Agent -> action
 
         Returns:
-            dict mapping Agent -> (obs, reward, done, info)
+            Tuple containing step results, episode completion status, and mean episode return.
 
         """
         self._require_attached_agents()
@@ -163,7 +167,8 @@ class PettingZooEnv:
         self.last_rewards = reward_dict.copy()
         self.last_infos = info_dict.copy()
 
-        results: dict[RLAgent, tuple[Array | None, float, bool, dict[str, Any]]] = {}
+        results: dict[RLAgent, StepResult] = {}
+        done_by_env_name: dict[str, bool] = {}
 
         for env_name in self.env_agent_names:
             agent = self.env_name_to_agent[env_name]
@@ -174,6 +179,7 @@ class PettingZooEnv:
             truncated = truncated_dict.get(env_name, False)
             done = terminated or truncated
             info = info_dict.get(env_name, {})
+            done_by_env_name[env_name] = done
 
             if obs is not None:
                 framework, device = iop.framework_device_of_array(obs)
@@ -184,7 +190,12 @@ class PettingZooEnv:
 
             results[agent] = (obs_array, rew, done, info)
 
-        return results
+        self.last_dones = done_by_env_name.copy()
+
+        episode_done = self._apply_step_accounting(results)
+        mean_episode_return = self._finalize_episode_stats() if episode_done else None
+
+        return results, episode_done, mean_episode_return
 
     def render(self) -> Any:  # noqa: ANN401
         """Render the underlying PettingZoo environment."""
@@ -203,3 +214,28 @@ class PettingZooEnv:
         if TORCH_AVAILABLE and isinstance(val, torch.Tensor):
             return int(val.item())
         return int(val)
+
+    def _apply_step_accounting(self, results: dict[RLAgent, StepResult]) -> bool:
+        """Update generic per-step counters on all agents and return whether an episode ended."""
+        episode_done = False
+        for agent, (_next_obs, reward, done, _info) in results.items():
+            agent.global_step += 1
+            agent.episode_return += float(reward)
+            agent.episode_length += 1
+            agent.done = bool(done)
+            episode_done = episode_done or bool(done)
+        return episode_done
+
+    def _finalize_episode_stats(self) -> float:
+        """Finalize all agent episode stats exactly once and return their mean return."""
+        per_agent_returns: list[float] = []
+        for agent in self.agents:
+            if agent.episode_length > 0:
+                per_agent_returns.append(float(agent.finalize_episode()))
+            elif agent.recent_returns:
+                per_agent_returns.append(float(agent.recent_returns[-1]))
+            else:
+                per_agent_returns.append(float(agent.finalize_episode()))
+            agent.done = False
+
+        return float(np.mean(per_agent_returns))
