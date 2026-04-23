@@ -8,45 +8,7 @@ from decent_bench.utils.array import Array
 from decent_bench.utils.types import SupportedDevices, SupportedFrameworks
 from decent_bench.utils_rl.q_networks import BaseNetwork, QNetwork
 from decent_bench.utils_rl.replay_buffer import RolloutBuffer, SimpleReplayBuffer
-
-
-class _RLCostAdapter(Cost):
-    """Internal adapter used only to satisfy Agent's constructor in RL mode."""
-
-    @property
-    def shape(self) -> tuple[int, ...]:
-        return (1,)
-
-    @property
-    def framework(self) -> SupportedFrameworks:
-        return SupportedFrameworks.NUMPY
-
-    @property
-    def device(self) -> SupportedDevices:
-        return SupportedDevices.CPU
-
-    @property
-    def m_smooth(self) -> float:
-        return 0.0
-
-    @property
-    def m_cvx(self) -> float:
-        return 0.0
-
-    def function(self, x: Array, **kwargs: Any) -> float:  # noqa: ARG002, ANN401
-        raise RuntimeError("RLAgent does not use optimization costs.")
-
-    def gradient(self, x: Array, **kwargs: Any) -> Array:  # noqa: ARG002, ANN401
-        raise RuntimeError("RLAgent does not use optimization costs.")
-
-    def hessian(self, x: Array, **kwargs: Any) -> Array:  # noqa: ARG002, ANN401
-        raise RuntimeError("RLAgent does not use optimization costs.")
-
-    def proximal(self, x: Array, rho: float, **kwargs: Any) -> Array:  # noqa: ARG002, ANN401
-        raise RuntimeError("RLAgent does not use optimization costs.")
-
-    def __add__(self, other: Cost) -> Cost:
-        return SumCost([self, other])
+from decent_bench.costs import ZeroCost
 
 
 class LinearDecreasingEpsilon:
@@ -82,7 +44,7 @@ class RLAgent(Agent):
         activation: Any = None,  # noqa: ANN401
         state_snapshot_period: int = 1,
     ):
-        cost = _RLCostAdapter()
+        cost = ZeroCost(shape=(1,))
         super().__init__(
             agent_id=agent_id,
             cost=cost,
