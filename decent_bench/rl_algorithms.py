@@ -476,3 +476,110 @@ class A2C(RLAlgorithm):
 
             agent.train_step += 1
             rollout.clear()
+
+
+@dataclass(eq=False)
+class PPO(A2C):
+    """
+    Proximal Policy Optimization (PPO).
+
+    PPO extends A2C by using a clipped surrogate objective and multiple
+    epochs of minibatch updates over the same on-policy rollout.
+
+    Hyperparameters (in addition to A2C):
+      - clip_coef: PPO clip range (epsilon)
+      - update_epochs: number of optimization epochs per rollout
+      - minibatch_size: size of each minibatch (use full batch if <= 0)
+    """
+
+    name: str = "PPO"
+
+    clip_coef: float = 0.2
+    update_epochs: int = 4
+    minibatch_size: int = 64
+
+    def on_episode_end(self, agents: list[RLAgent]) -> None:  # noqa: PLR0914
+        """
+        Train and update parameters for each agent using PPO clipped updates.
+
+        1. Bootstrap last value, compute GAE advantages and returns.
+        2. Normalize advantages.
+        3. Run multiple epochs of minibatch updates with clipped surrogate loss.
+        4. Clear the rollout buffer.
+        """
+        for agent in agents:
+            rollout = agent.rollout_buffer
+            if rollout.len() == 0:
+                continue
+
+            policy: ActorCritic = agent.policy
+            optimizer = agent.optimizer
+            dev = policy.device
+
+            # Bootstrap: V(s_T) — if the last transition was terminal, GAE masks it out.
+            last_obs = agent.latest_obs
+            if last_obs is not None:
+                with torch.no_grad():
+                    last_obs_t = iop.to_torch(last_obs, dev)
+                    last_value = float(policy.predict_values_torch(last_obs_t).squeeze().item())
+            else:
+                last_value = 0.0
+
+            rollout.compute_returns_and_advantages(
+                last_value=last_value,
+                gamma=self.gamma,
+                gae_lambda=self.gae_lambda,
+            )
+
+            batch = rollout.get()
+
+            obs_t = iop.to_torch(batch["obs"], dev)
+            actions_t = iop.to_torch(batch["actions"], dev).long()
+            advantages_t = iop.to_torch(batch["advantages"], dev)
+            returns_t = iop.to_torch(batch["returns"], dev)
+            old_logprobs_t = iop.to_torch(batch["logprobs"], dev)
+
+            # Normalise advantages for numerical stability
+            if advantages_t.numel() > 1:
+                advantages_t = (advantages_t - advantages_t.mean()) / (advantages_t.std() + 1e-8)
+
+            batch_size = int(advantages_t.shape[0])
+            minibatch_size = int(self.minibatch_size)
+            if minibatch_size <= 0 or minibatch_size > batch_size:
+                minibatch_size = batch_size
+
+            policy.torch_module.train()
+
+            for _ in range(self.update_epochs):
+                indices = torch.randperm(batch_size, device=advantages_t.device)
+
+                for start in range(0, batch_size, minibatch_size):
+                    end = start + minibatch_size
+                    mb_idx = indices[start:end]
+
+                    mb_obs = obs_t[mb_idx]
+                    mb_actions = actions_t[mb_idx]
+                    mb_adv = advantages_t[mb_idx]
+                    mb_returns = returns_t[mb_idx]
+                    mb_old_logprobs = old_logprobs_t[mb_idx]
+
+                    log_probs_t, entropy_t, values_t = policy.evaluate_actions_torch(mb_obs, mb_actions)
+
+                    ratio = torch.exp(log_probs_t - mb_old_logprobs)
+                    unclipped = ratio * mb_adv
+                    clipped = torch.clamp(ratio, 1.0 - self.clip_coef, 1.0 + self.clip_coef) * mb_adv
+                    policy_loss = -torch.min(unclipped, clipped).mean()
+
+                    value_loss = functional.mse_loss(values_t, mb_returns)
+                    entropy_loss = -entropy_t.mean()
+
+                    loss = policy_loss + self.vf_coef * value_loss + self.ent_coef * entropy_loss
+
+                    optimizer.zero_grad()
+                    loss.backward()  # type: ignore[no-untyped-call]
+                    clip_grad_norm_(policy.parameters(), max_norm=10.0)
+                    optimizer.step()
+
+                    agent.train_step += 1
+
+            rollout.clear()

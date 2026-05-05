@@ -3,12 +3,11 @@ from typing import Any
 
 import decent_bench.utils.interoperability as iop
 from decent_bench.agents import Agent  # from decent_bench import agent
-from decent_bench.costs import Cost, SumCost
+from decent_bench.costs import ZeroCost
 from decent_bench.utils.array import Array
-from decent_bench.utils.types import SupportedDevices, SupportedFrameworks
+from decent_bench.utils.types import SupportedDevices
 from decent_bench.utils_rl.q_networks import BaseNetwork, QNetwork
 from decent_bench.utils_rl.replay_buffer import RolloutBuffer, SimpleReplayBuffer
-from decent_bench.costs import ZeroCost
 
 
 class LinearDecreasingEpsilon:
