@@ -9,7 +9,7 @@ from torch.nn import functional
 from torch.nn.utils import clip_grad_norm_
 
 import decent_bench.utils.interoperability as iop
-from decent_bench.environments import PettingZooEnv, StepResult
+from decent_bench.environments import MPE, StepResult
 from decent_bench.rl_agents import LinearDecreasingEpsilon, RLAgent
 from decent_bench.utils.types import SupportedDevices
 from decent_bench.utils_rl.q_networks import ActorCritic, DQNPolicy
@@ -73,7 +73,7 @@ class RLAlgorithm(ABC):
     def finalize(
         self,
         agents: list[RLAgent],
-        env: PettingZooEnv,
+        env: MPE,
     ) -> None:
         """
         Finalize the algorithm.
@@ -97,7 +97,7 @@ class RLAlgorithm(ABC):
     def run(
         self,
         agents: list[RLAgent],
-        env: PettingZooEnv,
+        env: MPE,
         episode_callback: Callable[[int], None] | None = None,
     ) -> list[float]:
         """

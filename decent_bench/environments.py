@@ -19,9 +19,9 @@ except Exception:
 StepResult = tuple[Array | None, float, bool, dict[str, Any]]
 
 
-class PettingZooEnv:
+class MPE:
     """
-    Minimal wrapper connecting decent_bench's Agent objects with a generic PettingZoo Parallel environment.
+    Minimal wrapper connecting decent_bench's Agent objects with a generic MPE Parallel environment.
 
     The wrapper:
       - creates the environment
@@ -38,12 +38,12 @@ class PettingZooEnv:
         **env_kwargs: Any,  # noqa: ANN401
     ) -> None:
         """
-        Initialize the PettingZoo wrapper and validate agent mapping.
+        Initialize the MPE wrapper and validate agent mapping.
 
         Args:
             agents: optional list of Agent instances. If omitted, call attach_agents(...)
                 before reset()/step().
-            env_factory: a callable returning a PettingZoo ParallelEnv
+            env_factory: a callable returning an MPE ParallelEnv
                          (e.g., simple_spread_v3.parallel_env).
             **env_kwargs: keyword arguments forwarded to env_factory.
 
@@ -66,7 +66,7 @@ class PettingZooEnv:
         else:
             raise AttributeError(
                 "Environment object does not expose 'agents' or 'possible_agents'. "
-                "Pass a Parallel API env (env.agents) or an appropriate PettingZoo env."
+                "Pass a Parallel API env (env.agents) or an appropriate MPE env."
             )
 
         self.agent_to_env_name: dict[RLAgent, str] = {}
@@ -76,7 +76,7 @@ class PettingZooEnv:
             self.observation_spaces = {name: self.env.observation_space(name) for name in self.env_agent_names}
             self.action_spaces = {name: self.env.action_space(name) for name in self.env_agent_names}
         except Exception as e:
-            raise RuntimeError("Failed to initialize observation_spaces/action_spaces from PettingZoo") from e
+            raise RuntimeError("Failed to initialize observation_spaces/action_spaces from MPE") from e
 
         self.last_obs: dict[str, Any] = {}
         self.last_rewards: dict[str, float] = {}
@@ -108,13 +108,13 @@ class PettingZooEnv:
     def _require_attached_agents(self) -> None:
         if not self.agent_to_env_name:
             raise RuntimeError(
-                "PettingZooEnv has no attached agents. "
+                "MPE has no attached agents. "
                 "Instantiate with agents=... or call attach_agents(...) before reset()/step()."
             )
 
     def reset(self, **kwargs: Any) -> dict[RLAgent, Array]:  # noqa: ANN401
         """
-        Reset the underlying PettingZoo environment.
+        Reset the underlying MPE environment.
 
         Returns:
             A dict mapping Agent -> initial observation.
@@ -149,7 +149,7 @@ class PettingZooEnv:
         action_dict: Mapping[RLAgent, int | Array],
     ) -> tuple[dict[RLAgent, StepResult], bool, float | None]:
         """
-        Take a step in the underlying PettingZoo environment.
+        Take a step in the underlying MPE environment.
 
         Args:
             action_dict: dict mapping Agent -> action
@@ -198,7 +198,7 @@ class PettingZooEnv:
         return results, episode_done, mean_episode_return
 
     def render(self) -> Any:  # noqa: ANN401
-        """Render the underlying PettingZoo environment."""
+        """Render the underlying MPE environment."""
         return self.env.render()
 
     def close(self) -> None:

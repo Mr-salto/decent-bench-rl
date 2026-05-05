@@ -45,7 +45,7 @@ autodoc_type_aliases = {
     "NetworkT": "decent_bench.utils.types.NetworkT",
 }
 autodoc_mock_imports = [
-    "pettingzoo",
+    "mpe2",
     "pygame",
     "torch",
     "torchvision",

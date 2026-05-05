@@ -31,7 +31,7 @@ Issues = "https://github.com/team-decent/decent-bench/issues"
 rl = [
   "torch",
   "torchvision",
-  "pettingzoo",
+  "mpe2",
   "pygame>=2.5",
 ]
 
@@ -47,7 +47,7 @@ dev = [
   "types-tensorflow",
   "pandas-stubs",
   "kagglehub",
-  "pettingzoo",
+  "mpe2",
   "pygame>=2.5",
 ]
 dev-cpu = [
@@ -124,7 +124,7 @@ testpaths = ["test"]
 [tool.mypy]
 strict = true
 [[tool.mypy.overrides]]
-module = "pettingzoo.*"
+module = "mpe2.*"
 ignore_missing_imports = true
 
 [tool.ruff]

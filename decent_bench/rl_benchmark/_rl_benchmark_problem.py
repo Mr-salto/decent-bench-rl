@@ -2,9 +2,9 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-from pettingzoo.mpe import simple_adversary_v3, simple_spread_v3
+from mpe2 import simple_adversary_v3, simple_spread_v3
 
-from decent_bench.environments import PettingZooEnv
+from decent_bench.environments import MPE
 from decent_bench.rl_agents import RLAgent
 from decent_bench.schemes import AlwaysActive
 
@@ -32,7 +32,7 @@ class RLBenchmarkProblem:
     agents: list[RLAgent]
     env_config: dict[str, Any]
 
-    def create_env(self, agents: list[RLAgent] | None = None) -> PettingZooEnv:
+    def create_env(self, agents: list[RLAgent] | None = None) -> MPE:
         """Instantiate a fresh environment wrapper using this problem metadata."""
 
         def env_factory(**_env_kwargs: Any) -> Any:  # noqa: ANN401
@@ -43,7 +43,7 @@ class RLBenchmarkProblem:
             raise ValueError(f"Unsupported env_kind: {self.env_kind}")
 
         trial_agents = deepcopy(self.agents) if agents is None else agents
-        return PettingZooEnv(agents=trial_agents, env_factory=env_factory)
+        return MPE(agents=trial_agents, env_factory=env_factory)
 
 
 def create_simple_spread_problem(
@@ -52,11 +52,11 @@ def create_simple_spread_problem(
     render_mode: str | None = RENDER_MODE,
 ) -> RLBenchmarkProblem:
     """
-    Create out-of-the-box simple-spread problems using PettingZoo.
+    Create out-of-the-box simple-spread problems using MPE.
 
     Args:
         n_agents: number of agents in the environment
-        render_mode: PettingZoo render mode.
+        render_mode: MPE render mode.
 
     """
     env_config = {
@@ -79,11 +79,11 @@ def create_simple_adversary_problem(
     render_mode: str | None = RENDER_MODE,
 ) -> RLBenchmarkProblem:
     """
-    Create an out-of-the-box simple-adversary problem using PettingZoo.
+    Create an out-of-the-box simple-adversary problem using MPE.
 
     Args:
         n_good_agents: number of cooperative (non-adversary) agents.
-        render_mode: PettingZoo render mode.
+        render_mode: MPE render mode.
 
     """
     # simple_adversary_v3 is used with one adversary by design.
