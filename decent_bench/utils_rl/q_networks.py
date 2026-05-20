@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterator, Sequence
+from typing import cast
 
 import numpy as np
 
@@ -12,6 +13,7 @@ from decent_bench.utils.types import SupportedDevices, SupportedFrameworks
 try:
     import torch
     from torch import nn
+    from torch.nn import functional
 
     TORCH_AVAILABLE = True
 except Exception as e:
@@ -292,6 +294,113 @@ class DQNPolicy(BaseNetwork):
     def forward(self, obs: Array) -> Array:
         """Forward pass returning Q-values from the online network."""
         return self.q_network.forward(obs)
+
+
+class QMixer(BaseNetwork):
+    """
+    QMIX mixing network with hypernet-generated weights conditioned on global state.
+
+    Combines per-agent Q-values into a joint Q_tot while enforcing monotonicity
+    w.r.t. each agent utility via non-negative mixing weights.
+    """
+
+    def __init__(  # noqa: PLR0917
+        self,
+        n_agents: int,
+        state_dim: int,
+        mixing_hidden_dim: int = 32,
+        hypernet_hidden_dim: int = 64,
+        device: SupportedDevices = SupportedDevices.CPU,
+        use_softplus: bool = True,
+    ) -> None:
+        super().__init__(obs_dim=state_dim, n_actions=n_agents, device=device)
+        self.n_agents = int(n_agents)
+        self.state_dim = int(state_dim)
+        self.mixing_hidden_dim = int(mixing_hidden_dim)
+        self.hypernet_hidden_dim = int(hypernet_hidden_dim)
+        self.use_softplus = bool(use_softplus)
+
+        self.hyper_w1 = self._make_hypernet(
+            out_dim=self.n_agents * self.mixing_hidden_dim,
+            hidden_dim=self.hypernet_hidden_dim,
+        )
+        self.hyper_b1 = self._make_hypernet(
+            out_dim=self.mixing_hidden_dim,
+            hidden_dim=self.hypernet_hidden_dim,
+        )
+        self.hyper_w2 = self._make_hypernet(
+            out_dim=self.mixing_hidden_dim,
+            hidden_dim=self.hypernet_hidden_dim,
+        )
+        self.hyper_b2 = self._make_hypernet(
+            out_dim=1,
+            hidden_dim=self.hypernet_hidden_dim,
+        )
+
+        self._module = nn.ModuleDict({
+            "hyper_w1": self.hyper_w1,
+            "hyper_b1": self.hyper_b1,
+            "hyper_w2": self.hyper_w2,
+            "hyper_b2": self.hyper_b2,
+        })
+
+        self.move_to_device(self.device)
+
+    def _make_hypernet(self, out_dim: int, hidden_dim: int) -> nn.Module:
+        if hidden_dim <= 0:
+            return nn.Linear(self.state_dim, out_dim)
+        return nn.Sequential(
+            nn.Linear(self.state_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, out_dim),
+        )
+
+    def _enforce_nonneg(self, w: torch.Tensor) -> torch.Tensor:
+        if self.use_softplus:
+            return functional.softplus(w)
+        return torch.abs(w)
+
+    def forward_torch(self, agent_qs: torch.Tensor, states: torch.Tensor) -> torch.Tensor:
+        """
+        Compute joint Q_tot from per-agent Q-values and global state.
+
+        Args:
+            agent_qs: torch.Tensor shape [B, n_agents] or [n_agents]
+            states: torch.Tensor shape [B, state_dim] or [state_dim]
+
+        Returns:
+            Q_tot as torch.Tensor with shape [B] (or scalar for single sample).
+
+        """
+        if agent_qs.dim() == 1:
+            agent_qs = agent_qs.unsqueeze(0)
+        if states.dim() == 1:
+            states = states.unsqueeze(0)
+
+        batch_size = agent_qs.shape[0]
+        agent_qs = agent_qs.view(batch_size, 1, self.n_agents)
+
+        w1 = self._enforce_nonneg(self.hyper_w1(states))
+        w1 = w1.view(batch_size, self.n_agents, self.mixing_hidden_dim)
+        b1 = self.hyper_b1(states).view(batch_size, 1, self.mixing_hidden_dim)
+
+        hidden = functional.elu(torch.bmm(agent_qs, w1) + b1)
+
+        w2 = self._enforce_nonneg(self.hyper_w2(states))
+        w2 = w2.view(batch_size, self.mixing_hidden_dim, 1)
+        b2 = self.hyper_b2(states).view(batch_size, 1, 1)
+
+        q_tot = torch.bmm(hidden, w2) + b2
+        q_tot_t = cast("torch.Tensor", q_tot)
+        return q_tot_t.view(-1)
+
+    def forward(self, agent_qs: Array, states: Array) -> Array:
+        """Forward pass (iop arrays), intended for inference."""
+        agent_qs_t = self._to_torch_tensor(agent_qs)
+        states_t = self._to_torch_tensor(states)
+        with torch.no_grad():
+            q_tot_t = self.forward_torch(agent_qs_t, states_t)
+        return self._to_iop_array(q_tot_t)
 
 
 class ActorCritic(BaseNetwork):

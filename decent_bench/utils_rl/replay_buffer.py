@@ -1,5 +1,6 @@
 import random
 from collections import deque
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -8,6 +9,16 @@ import decent_bench.utils.interoperability as iop
 from decent_bench.utils.array import Array
 
 Transition = tuple[Array, int, float, Array | None, bool, dict[str, Any] | None]
+JointTransition = tuple[
+    Array,
+    Array,
+    float,
+    Array,
+    bool,
+    Array,
+    Array | None,
+    dict[str, Any] | None,
+]
 
 
 class SimpleReplayBuffer:
@@ -97,6 +108,143 @@ class SimpleReplayBuffer:
             "rewards": rewards_batch,
             "next_obs": next_obs_batch,
             "dones": dones_batch,
+            "infos": infos_list,
+        }
+
+
+class JointReplayBuffer:
+    """
+    Joint replay buffer for multi-agent transitions.
+
+    Stores transitions as tuples:
+      (obs, actions, reward, next_obs, done, state, next_state, info)
+    """
+
+    def __init__(self, capacity: int = 100_000, n_agents: int | None = None) -> None:
+        self.capacity = int(capacity)
+        self.n_agents = int(n_agents) if n_agents is not None else None
+        self._buf: deque[JointTransition] = deque(maxlen=self.capacity)
+
+    def add(  # noqa: PLR0917
+        self,
+        obs: Sequence[Array],
+        actions: Sequence[int],
+        reward: float,
+        next_obs: Sequence[Array | None],
+        done: bool,
+        state: Array,
+        next_state: Array | None = None,
+        info: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Append one joint transition to the replay buffer.
+
+        Raises:
+            ValueError: if agent dimensions are inconsistent.
+
+        """
+        if self.n_agents is None:
+            self.n_agents = len(obs)
+        if len(obs) != self.n_agents or len(actions) != self.n_agents or len(next_obs) != self.n_agents:
+            raise ValueError("JointReplayBuffer received mismatched agent dimensions.")
+
+        framework, device = iop.framework_device_of_array(obs[0])
+        obs_batch = iop.stack(obs, dim=0)
+
+        next_obs_fixed: list[Array] = []
+        for obs_item, next_obs_item in zip(obs, next_obs, strict=False):
+            if next_obs_item is None:
+                next_obs_fixed.append(iop.zeros_like(obs_item))
+            else:
+                next_obs_fixed.append(next_obs_item)
+        next_obs_batch = iop.stack(next_obs_fixed, dim=0)
+
+        actions_np = np.array([int(a) for a in actions], dtype=np.int64)
+        actions_batch = iop.to_array(actions_np, framework, device)
+
+        transition = (
+            obs_batch,
+            actions_batch,
+            float(reward),
+            next_obs_batch,
+            bool(done),
+            state,
+            next_state,
+            info,
+        )
+        self._buf.append(transition)
+
+    def size(self) -> int:
+        """Return the number of currently stored transitions."""
+        return len(self._buf)
+
+    def clear(self) -> None:
+        """Remove all transitions from the replay buffer."""
+        self._buf.clear()
+
+    def sample(self, batch_size: int) -> list[JointTransition]:
+        """Return a list of sampled transitions (raw tuples)."""
+        n = self.size()
+        if batch_size >= n:
+            return random.sample(list(self._buf), k=n)
+        return random.sample(self._buf, k=batch_size)
+
+    def sample_batch(self, batch_size: int) -> dict[str, Any]:  # noqa: PLR0914
+        """
+        Sample a minibatch and returns framework-native arrays via iop.
+
+        Returns a dict with keys:
+        - obs: stacked observations (Array) shape [B, n_agents, ...]
+        - actions: stacked actions (Array) shape [B, n_agents]
+        - rewards: stacked rewards (Array) shape [B]
+        - next_obs: stacked next observations (Array) shape [B, n_agents, ...]
+        - dones: stacked dones (Array) shape [B]
+        - state: stacked state (Array) shape [B, state_dim]
+        - next_state: stacked next state (Array) shape [B, state_dim]
+        - infos: list of info dicts (unchanged)
+        """
+        transitions = self.sample(batch_size)
+
+        (
+            obs_list,
+            actions_list,
+            rewards_list,
+            next_obs_list,
+            dones_list,
+            states_list,
+            next_states_list,
+            infos_list,
+        ) = map(list, zip(*transitions, strict=True))
+
+        framework, device = iop.framework_device_of_array(obs_list[0])
+
+        obs_batch = iop.stack(obs_list, dim=0)
+        actions_batch = iop.stack(actions_list, dim=0)
+        next_obs_batch = iop.stack(next_obs_list, dim=0)
+
+        rewards_np = np.array(rewards_list, dtype=np.float32)
+        dones_np = np.array(dones_list, dtype=np.bool_)
+
+        rewards_batch = iop.to_array(rewards_np, framework, device)
+        dones_batch = iop.to_array(dones_np, framework, device)
+
+        state_batch = iop.stack(states_list, dim=0)
+        next_state_fixed = []
+        for state, next_state in zip(states_list, next_states_list, strict=False):
+            if next_state is None:
+                next_state_fixed.append(iop.zeros_like(state))
+            else:
+                next_state_fixed.append(next_state)
+        next_state_batch = iop.stack(next_state_fixed, dim=0)
+
+        return {
+            "obs": obs_batch,
+            "actions": actions_batch,
+            "rewards": rewards_batch,
+            "next_obs": next_obs_batch,
+            "dones": dones_batch,
+            "state": state_batch,
+            "next_state": next_state_batch,
             "infos": infos_list,
         }
 

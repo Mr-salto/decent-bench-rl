@@ -82,6 +82,7 @@ class MPE:
         self.last_rewards: dict[str, float] = {}
         self.last_dones: dict[str, bool] = {}
         self.last_infos: dict[str, dict[str, Any]] = {}
+        self.last_global_state: Array | None = None
 
         if agents is not None:
             self.attach_agents(agents)
@@ -142,6 +143,8 @@ class MPE:
             agent.latest_obs = obs_array
             agent_obs[agent] = obs_array
 
+        self.last_global_state = self.get_global_state()
+
         return agent_obs
 
     def step(  # noqa: PLR0914
@@ -159,6 +162,7 @@ class MPE:
 
         """
         self._require_attached_agents()
+        state_before = self.last_global_state
         env_actions = {
             self.agent_to_env_name[agent]: self._array_to_int(action) for agent, action in action_dict.items()
         }
@@ -166,6 +170,8 @@ class MPE:
         self.last_obs = obs_dict.copy()
         self.last_rewards = reward_dict.copy()
         self.last_infos = info_dict.copy()
+        next_state = self.get_global_state()
+        self.last_global_state = next_state
 
         results: dict[RLAgent, StepResult] = {}
         done_by_env_name: dict[str, bool] = {}
@@ -178,7 +184,12 @@ class MPE:
             terminated = terminated_dict.get(env_name, False)
             truncated = truncated_dict.get(env_name, False)
             done = terminated or truncated
-            info = info_dict.get(env_name, {})
+            info = dict(info_dict.get(env_name, {}))
+
+            if state_before is not None:
+                info["global_state"] = state_before
+            if next_state is not None:
+                info["next_global_state"] = next_state
             done_by_env_name[env_name] = done
 
             if obs is not None:
@@ -189,6 +200,7 @@ class MPE:
                 obs_array = None
 
             results[agent] = (obs_array, rew, done, info)
+            self.last_infos[env_name] = info
 
         self.last_dones = done_by_env_name.copy()
 
@@ -196,6 +208,22 @@ class MPE:
         mean_episode_return = self._finalize_episode_stats() if episode_done else None
 
         return results, episode_done, mean_episode_return
+
+    def get_global_state(self) -> Array | None:
+        """
+        Retrieve a global state representation from the underlying environment.
+
+        Returns:
+            iop Array for the global state, or None if unavailable.
+
+        """
+        state = self.env.state()
+
+        if state is None:
+            return None
+
+        framework, device = iop.framework_device_of_array(state)
+        return iop.to_array(state, framework, device)
 
     def render(self) -> Any:  # noqa: ANN401
         """Render the underlying MPE environment."""

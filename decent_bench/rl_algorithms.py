@@ -11,9 +11,10 @@ from torch.nn.utils import clip_grad_norm_
 import decent_bench.utils.interoperability as iop
 from decent_bench.environments import MPE, StepResult
 from decent_bench.rl_agents import LinearDecreasingEpsilon, RLAgent
+from decent_bench.utils.array import Array
 from decent_bench.utils.types import SupportedDevices
-from decent_bench.utils_rl.q_networks import ActorCritic, DQNPolicy
-from decent_bench.utils_rl.replay_buffer import RolloutBuffer, SimpleReplayBuffer
+from decent_bench.utils_rl.q_networks import ActorCritic, DQNPolicy, QMixer
+from decent_bench.utils_rl.replay_buffer import JointReplayBuffer, RolloutBuffer, SimpleReplayBuffer
 
 
 class RLAlgorithm(ABC):
@@ -313,6 +314,285 @@ class IndependentDQN(RLAlgorithm):
 
                 if agent.dqn_train_steps % self.target_update_freq == 0:
                     policy.sync_target()
+
+
+@dataclass(eq=False)
+class QMIX(RLAlgorithm):
+    """
+    QMIX (centralized training with decentralized execution).
+
+    Each agent has its own DQNPolicy. A mixing network combines per-agent Q-values
+    into a joint Q_tot conditioned on the global state. Training is centralized via
+    a shared replay buffer and a shared optimizer.
+
+    Hyperparameters:
+      - gamma: discount factor
+      - lr: optimizer learning rate
+      - batch_size: minibatch size
+      - replay_start_size: minimal buffer size before training begins
+      - target_update_freq: number of gradient updates between target hard-syncs
+      - train_freq: perform a gradient update every `train_freq` env steps
+      - grad_updates_per_step: gradient steps per training trigger
+      - mixing_hidden_dim: mixer hidden size
+      - hypernet_hidden_dim: hypernetwork hidden size
+      - use_softplus: enforce positive mixing weights with softplus if True
+      - reward_agg: team reward aggregation ("mean" or "sum")
+    """
+
+    episodes: int = 100
+    episode_length: int = 30
+    name: str = "QMIX"
+
+    gamma: float = 0.99
+    lr: float = 1e-3
+    batch_size: int = 32
+    replay_start_size: int = 500
+    target_update_freq: int = 100
+    train_freq: int = 1
+    grad_updates_per_step: int = 1
+    mixing_hidden_dim: int = 32
+    hypernet_hidden_dim: int = 64
+    use_softplus: bool = True
+    reward_agg: str = "mean"
+    state_dim: int | None = None
+    device: SupportedDevices = SupportedDevices.CPU
+    qmix_mixer: QMixer | None = None
+    qmix_target_mixer: QMixer | None = None
+
+    def _initialize_mixer_from_state(self, agents: list[RLAgent], state: Array) -> None:
+        if self.state_dim is None:
+            shape = np.asarray(state).shape
+            self.state_dim = int(np.prod(shape))
+
+        mixer = QMixer(
+            n_agents=len(agents),
+            state_dim=self.state_dim,
+            mixing_hidden_dim=self.mixing_hidden_dim,
+            hypernet_hidden_dim=self.hypernet_hidden_dim,
+            use_softplus=self.use_softplus,
+            device=self.device,
+        )
+        target_mixer = QMixer(
+            n_agents=len(agents),
+            state_dim=self.state_dim,
+            mixing_hidden_dim=self.mixing_hidden_dim,
+            hypernet_hidden_dim=self.hypernet_hidden_dim,
+            use_softplus=self.use_softplus,
+            device=self.device,
+        )
+        target_mixer.copy_from(mixer)
+
+        self.qmix_mixer = mixer
+        self.qmix_target_mixer = target_mixer
+
+        params: list[torch.nn.Parameter] = list(mixer.parameters())
+        for agent in agents:
+            policy = agent.policy
+            params.extend(list(policy.parameters()))
+
+        optimizer = torch.optim.Adam(params, lr=self.lr)
+        for agent in agents:
+            agent.optimizer = optimizer
+
+    def initialize(self, agents: list[RLAgent]) -> None:
+        """
+        Initialize agent-local DQN policies, shared mixer, optimizer, and replay buffer.
+
+        Raises:
+            RuntimeError: if any agent has no observation space.
+
+        """
+        obs_dims: list[int] = []
+        for agent in agents:
+            obs_space = agent.observation_space
+            if obs_space is None:
+                raise RuntimeError(f"Agent {agent.id} has no observation_space set during QMIX.initialize()")
+            obs_dim = int(np.prod(obs_space.shape))
+            obs_dims.append(obs_dim)
+            n_actions = agent.action_space.n
+
+            policy = DQNPolicy(
+                obs_dim=obs_dim,
+                n_actions=n_actions,
+                hidden_sizes=(64, 64),
+                epsilon=1.0,
+                epsilon_schedule=LinearDecreasingEpsilon(1.0),
+                device=self.device,
+            )
+            agent.attach_policy(policy)
+            agent.dqn_train_steps = 0
+
+        shared_replay = JointReplayBuffer(capacity=100000, n_agents=len(agents))
+
+        self.qmix_mixer = None
+        self.qmix_target_mixer = None
+
+        for agent in agents:
+            agent.replay_buffer = shared_replay
+            agent.optimizer = None
+
+    def on_step_collect(  # noqa: PLR0914
+        self, agents: list[RLAgent], results: dict[RLAgent, StepResult]
+    ) -> None:
+        """
+        Store joint transitions in the shared replay buffer.
+
+        Raises:
+            RuntimeError: if required agent state is missing.
+            ValueError: if reward aggregation mode is unsupported.
+
+        """
+        replay_buffer = agents[0].replay_buffer
+        if replay_buffer is None:
+            raise RuntimeError("QMIX requires a shared replay buffer.")
+
+        obs_list: list[Array] = []
+        actions_list: list[int] = []
+        rewards_list: list[float] = []
+        next_obs_list: list[Array | None] = []
+        done_flags: list[bool] = []
+        global_state: Array | None = None
+        next_global_state: Array | None = None
+
+        for agent in agents:
+            next_obs, reward, done, info = results[agent]
+            if info and global_state is None:
+                candidate_state = info["global_state"]
+                candidate_next_state = info["next_global_state"]
+                if candidate_state is not None and candidate_next_state is not None:
+                    framework, device = iop.framework_device_of_array(candidate_state)
+                    global_state = iop.to_array(candidate_state, framework, device)
+                    next_global_state = iop.to_array(candidate_next_state, framework, device)
+
+            prev_obs = agent.obs_at_act if agent.obs_at_act is not None else agent.latest_obs
+            if prev_obs is None:
+                raise RuntimeError(f"Agent {agent.id} has no obs_at_act for QMIX collection.")
+            action = agent.last_action
+            if action is None:
+                raise RuntimeError(f"Agent {agent.id} has no last_action for QMIX collection.")
+
+            obs_list.append(prev_obs)
+            actions_list.append(int(action))
+            rewards_list.append(float(reward))
+            next_obs_list.append(next_obs)
+            done_flags.append(bool(done))
+
+        if self.reward_agg == "sum":
+            team_reward = float(np.sum(rewards_list))
+        elif self.reward_agg == "mean":
+            team_reward = float(np.mean(rewards_list))
+        else:
+            raise ValueError(f"Unsupported reward_agg: {self.reward_agg}")
+
+        episode_done = any(done_flags)
+
+        if global_state is None or next_global_state is None:
+            raise RuntimeError(
+                "QMIX requires env-provided global_state/next_global_state. "
+                "Ensure MPE.get_global_state() returns a state and is attached in info."
+            )
+
+        if self.qmix_mixer is None:
+            self._initialize_mixer_from_state(agents, global_state)
+
+        replay_buffer.add(
+            obs=obs_list,
+            actions=actions_list,
+            reward=team_reward,
+            next_obs=next_obs_list,
+            done=episode_done,
+            state=global_state,
+            next_state=next_global_state,
+            info=None,
+        )
+
+    def on_step_update(self, agents: list[RLAgent]) -> None:  # noqa: PLR0914, PLR0915
+        """
+        Update per-agent Q-networks and the mixer from the shared replay buffer.
+
+        Raises:
+            RuntimeError: if required replay buffer is missing.
+
+        """
+        replay_buffer = agents[0].replay_buffer
+        if replay_buffer is None:
+            raise RuntimeError("QMIX requires a shared replay buffer.")
+
+        for agent in agents:
+            agent.policy.update_epsilon(agent.global_step)
+
+        if replay_buffer.size() < self.replay_start_size or agents[0].global_step % self.train_freq != 0:
+            return
+
+        mixer = self.qmix_mixer
+        target_mixer = self.qmix_target_mixer
+        optimizer = agents[0].optimizer
+        if mixer is None or target_mixer is None or optimizer is None:
+            return
+
+        for _ in range(self.grad_updates_per_step):
+            batch = replay_buffer.sample_batch(self.batch_size)
+
+            dev = agents[0].policy.device
+            obs_t = iop.to_torch(batch["obs"], dev)
+            next_obs_t = iop.to_torch(batch["next_obs"], dev)
+            actions_t = iop.to_torch(batch["actions"], dev).long()
+            rewards_t = iop.to_torch(batch["rewards"], dev)
+            dones_t = iop.to_torch(batch["dones"], dev).float()
+            state_t = iop.to_torch(batch["state"], dev)
+            next_state_t = iop.to_torch(batch["next_state"], dev)
+
+            if obs_t.dim() == 2:
+                obs_t = obs_t.unsqueeze(1)
+                next_obs_t = next_obs_t.unsqueeze(1)
+                actions_t = actions_t.unsqueeze(1)
+
+            agent_qs: list[torch.Tensor] = []
+            next_agent_qs: list[torch.Tensor] = []
+
+            for idx, agent in enumerate(agents):
+                policy = agent.policy
+                policy.q_network.torch_module.train()
+                q_all = policy.q_network.torch_module(obs_t[:, idx, ...])
+                q_taken = q_all.gather(1, actions_t[:, idx].unsqueeze(1)).squeeze(1)
+                agent_qs.append(q_taken)
+
+                with torch.no_grad():
+                    policy.target_q_network.torch_module.eval()
+                    next_q_all = policy.target_q_network.torch_module(next_obs_t[:, idx, ...])
+                    next_q_max, _ = next_q_all.max(dim=1)
+                    next_agent_qs.append(next_q_max)
+
+            agent_qs_t = torch.stack(agent_qs, dim=1)
+            next_agent_qs_t = torch.stack(next_agent_qs, dim=1)
+
+            mixer.torch_module.train()
+            q_tot = mixer.forward_torch(agent_qs_t, state_t)
+
+            with torch.no_grad():
+                target_mixer.torch_module.eval()
+                target_q_tot = target_mixer.forward_torch(next_agent_qs_t, next_state_t)
+                td_target = rewards_t + self.gamma * (1.0 - dones_t) * target_q_tot
+
+            loss = functional.mse_loss(q_tot, td_target)
+            optimizer.zero_grad()
+            loss.backward()  # type: ignore[no-untyped-call]
+
+            params = list(mixer.parameters())
+            for agent in agents:
+                params.extend(list(agent.policy.parameters()))
+            clip_grad_norm_(params, max_norm=10.0)
+
+            optimizer.step()
+
+            for agent in agents:
+                agent.train_step += 1
+                agent.dqn_train_steps += 1
+
+            if agents[0].dqn_train_steps % self.target_update_freq == 0:
+                for agent in agents:
+                    agent.policy.sync_target()
+                target_mixer.copy_from(mixer)
 
 
 @dataclass(eq=False)
