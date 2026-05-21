@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterator, Sequence
-from typing import cast
 
 import numpy as np
 
@@ -13,12 +12,12 @@ from decent_bench.utils.types import SupportedDevices, SupportedFrameworks
 try:
     import torch
     from torch import nn
-    from torch.nn import functional
+    from torch.nn import functional as F
 
     TORCH_AVAILABLE = True
 except Exception as e:
     TORCH_AVAILABLE = False
-    raise ImportError("PyTorch is required for QNetwork. Install torch in your environment.") from e
+    raise ImportError("PyTorch is required for QModel. Install torch in your environment.") from e
 
 from torch.distributions import Categorical
 
@@ -28,9 +27,9 @@ def _resolve_torch_device(device: SupportedDevices) -> torch.device:
     return torch.device("cuda" if device == SupportedDevices.GPU else "cpu")
 
 
-class BaseNetwork(nn.Module):
+class BaseModel(nn.Module):
     """
-    Base class for all networks using iop interface.
+    Base class for all models using iop interface.
 
     Handles:
         - device resolution
@@ -59,27 +58,27 @@ class BaseNetwork(nn.Module):
         """Expose internal torch module for optimizer creation."""
         return self._module
 
-    def copy_from(self, other: BaseNetwork) -> None:
+    def copy_from(self, other: "BaseModel") -> None:
         """
-        Hard-copy parameters from another Network instance (must be torch-backed).
+        Hard-copy parameters from another Model instance (must be torch-backed).
 
         Raises:
-            TypeError: if the other object is not a BaseNetwork.
+            TypeError: if the other object is not a BaseModel.
 
         """
-        if not isinstance(other, BaseNetwork):
-            raise TypeError("copy_from expects another BaseNetwork")
+        if not isinstance(other, BaseModel):
+            raise TypeError("copy_from expects another BaseModel")
         self.torch_module.load_state_dict(other.torch_module.state_dict())
 
     def move_to_device(self, device: SupportedDevices) -> None:
-        """Move this network to the requested interoperability device."""
+        """Move this model to the requested interoperability device."""
         self.device = device
         self.torch_device = _resolve_torch_device(device)
         self._module.to(self.torch_device)
 
     def _to_torch_tensor(self, array: Array | torch.Tensor) -> torch.Tensor:
         """
-        Convert an iop Array or native array to a torch tensor on the network device.
+        Convert an iop Array or native array to a torch tensor on the model device.
 
         Raises:
             TypeError: If the input cannot be converted to a torch.Tensor.
@@ -111,9 +110,9 @@ class BaseNetwork(nn.Module):
         return iop.to_array(t_cpu, SupportedFrameworks.PYTORCH, self.device)
 
 
-class QNetwork(BaseNetwork):
+class QModel(BaseModel):
     """
-    Torch-only Q-network with an iop interface.
+    Torch-only Q-model with an iop interface.
 
     - Accepts iop Arrays (or native arrays) as input to forward()
     - Internally converts to torch.Tensor and runs a torch.nn.Module
@@ -202,13 +201,13 @@ class QNetwork(BaseNetwork):
             obs_t = obs_t.unsqueeze(0)
         out = self.torch_module(obs_t)
         if not isinstance(out, torch.Tensor):
-            raise TypeError("QNetwork forward pass did not return a torch.Tensor")
+            raise TypeError("QModel forward pass did not return a torch.Tensor")
         return out
 
 
-class DQNPolicy(BaseNetwork):
+class DQNPolicy(BaseModel):
     """
-    DQN policy wrapping a QNetwork and a target QNetwork.
+    DQN policy wrapping a QModel and a target QModel.
 
     Implements epsilon-greedy action selection via get_action_and_value(),
     which is the interface expected by RLAgent.act().
@@ -236,20 +235,20 @@ class DQNPolicy(BaseNetwork):
         self.epsilon = epsilon
         self.epsilon_schedule = epsilon_schedule
 
-        self.q_network = QNetwork(obs_dim, n_actions, hidden_sizes, device)
-        self.target_q_network = QNetwork(obs_dim, n_actions, hidden_sizes, device)
+        self.q_network = QModel(obs_dim, n_actions, hidden_sizes, device)
+        self.target_q_network = QModel(obs_dim, n_actions, hidden_sizes, device)
         self.target_q_network.copy_from(self.q_network)
         self._rng = np.random.default_rng()
 
-        # BaseNetwork helpers operate on the online network module.
+        # BaseModel helpers operate on the online model module.
         self._module = self.q_network.torch_module
 
     def parameters(self, recurse: bool = True) -> Iterator[nn.Parameter]:
-        """Return only online Q-network parameters (used by the optimizer)."""
+        """Return only online Q-model parameters (used by the optimizer)."""
         return self.q_network.parameters(recurse=recurse)
 
     def move_to_device(self, device: SupportedDevices) -> None:
-        """Move both online and target networks to device."""
+        """Move both online and target models to device."""
         super().move_to_device(device)
         self.q_network.move_to_device(device)
         self.target_q_network.move_to_device(device)
@@ -260,7 +259,7 @@ class DQNPolicy(BaseNetwork):
             self.epsilon = float(self.epsilon_schedule(step))
 
     def sync_target(self) -> None:
-        """Hard-copy online network weights into the target network."""
+        """Hard-copy online model weights into the target model."""
         self.target_q_network.copy_from(self.q_network)
 
     def get_action_and_value(self, obs: Array, deterministic: bool = False) -> tuple[int, None, float]:
@@ -292,19 +291,19 @@ class DQNPolicy(BaseNetwork):
         return (action, None, q_value)
 
     def forward(self, obs: Array) -> Array:
-        """Forward pass returning Q-values from the online network."""
+        """Forward pass returning Q-values from the online model."""
         return self.q_network.forward(obs)
 
 
-class QMixer(BaseNetwork):
+class QMixer(BaseModel):
     """
-    QMIX mixing network with hypernet-generated weights conditioned on global state.
+    QMIX mixing model with hypernet-generated weights conditioned on global state.
 
     Combines per-agent Q-values into a joint Q_tot while enforcing monotonicity
     w.r.t. each agent utility via non-negative mixing weights.
     """
 
-    def __init__(  # noqa: PLR0917
+    def __init__(
         self,
         n_agents: int,
         state_dim: int,
@@ -357,7 +356,7 @@ class QMixer(BaseNetwork):
 
     def _enforce_nonneg(self, w: torch.Tensor) -> torch.Tensor:
         if self.use_softplus:
-            return functional.softplus(w)
+            return F.softplus(w)
         return torch.abs(w)
 
     def forward_torch(self, agent_qs: torch.Tensor, states: torch.Tensor) -> torch.Tensor:
@@ -384,15 +383,14 @@ class QMixer(BaseNetwork):
         w1 = w1.view(batch_size, self.n_agents, self.mixing_hidden_dim)
         b1 = self.hyper_b1(states).view(batch_size, 1, self.mixing_hidden_dim)
 
-        hidden = functional.elu(torch.bmm(agent_qs, w1) + b1)
+        hidden = F.elu(torch.bmm(agent_qs, w1) + b1)
 
         w2 = self._enforce_nonneg(self.hyper_w2(states))
         w2 = w2.view(batch_size, self.mixing_hidden_dim, 1)
         b2 = self.hyper_b2(states).view(batch_size, 1, 1)
 
         q_tot = torch.bmm(hidden, w2) + b2
-        q_tot_t = cast("torch.Tensor", q_tot)
-        return q_tot_t.view(-1)
+        return q_tot.view(-1)
 
     def forward(self, agent_qs: Array, states: Array) -> Array:
         """Forward pass (iop arrays), intended for inference."""
@@ -403,12 +401,12 @@ class QMixer(BaseNetwork):
         return self._to_iop_array(q_tot_t)
 
 
-class ActorCritic(BaseNetwork):
+class ActorCritic(BaseModel):
     """
     ActorCritic model that produces both policy and value outputs.
 
     Modes:
-      - Independent: actor and critic each have a separate network (default)
+    - Independent: actor and critic each have a separate model (default)
       - shared_features (actor and critic share a common trunk)
 
     Args:
@@ -513,7 +511,7 @@ class ActorCritic(BaseNetwork):
         self, obs: torch.Tensor, deterministic: bool = True
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Forward pass in actor and critic networks. Used for training.
+        Forward pass in actor and critic models. Used for training.
 
         Args:
             obs: Observations
@@ -530,7 +528,7 @@ class ActorCritic(BaseNetwork):
 
     def forward(self, obs: Array, deterministic: bool = True) -> tuple[Array, Array, Array]:
         """
-        Forward pass in actor and critic networks.
+        Forward pass in actor and critic models.
 
         Args:
             obs: Observations

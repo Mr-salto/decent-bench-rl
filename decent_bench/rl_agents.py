@@ -6,7 +6,7 @@ from decent_bench.agents import Agent  # from decent_bench import agent
 from decent_bench.costs import ZeroCost
 from decent_bench.utils.array import Array
 from decent_bench.utils.types import SupportedDevices
-from decent_bench.utils_rl.q_networks import BaseNetwork, QNetwork
+from decent_bench.utils_rl.models import BaseModel, QModel
 from decent_bench.utils_rl.replay_buffer import RolloutBuffer, SimpleReplayBuffer
 
 
@@ -166,16 +166,16 @@ class RLAgent(Agent):
 
         return int(self.replay_buffer.size())
 
-    def attach_policy(self, policy: BaseNetwork) -> None:
+    def attach_policy(self, policy: BaseModel) -> None:
         """Attach a policy callable or policy object to this agent."""
         self.policy = policy
 
-    def attach_q_network(self, qnet: QNetwork) -> None:
-        """Attach a Q-network (for DQN-like algorithms)."""
+    def attach_q_network(self, qnet: QModel) -> None:
+        """Attach a Q-model (for DQN-like algorithms)."""
         self.q_network = qnet
 
-    def attach_target_q_network(self, qnet: QNetwork) -> None:
-        """Attach a target Q-network."""
+    def attach_target_q_network(self, qnet: QModel) -> None:
+        """Attach a target Q-model."""
         self.target_q_network = qnet
 
     def attach_replay_buffer(self, buffer: SimpleReplayBuffer) -> None:

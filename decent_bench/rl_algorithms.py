@@ -13,7 +13,7 @@ from decent_bench.environments import MPE, StepResult
 from decent_bench.rl_agents import LinearDecreasingEpsilon, RLAgent
 from decent_bench.utils.array import Array
 from decent_bench.utils.types import SupportedDevices
-from decent_bench.utils_rl.q_networks import ActorCritic, DQNPolicy, QMixer
+from decent_bench.utils_rl.models import ActorCritic, DQNPolicy, QMixer
 from decent_bench.utils_rl.replay_buffer import JointReplayBuffer, RolloutBuffer, SimpleReplayBuffer
 
 
@@ -171,10 +171,10 @@ class RLAlgorithm(ABC):
 @dataclass(eq=False)
 class IndependentDQN(RLAlgorithm):
     """
-    Independent DQN (IDQN) algorithm — each agent trains its own Q-network using its local replay buffer.
+    Independent DQN (IDQN) algorithm — each agent trains its own Q-model using its local replay buffer.
 
     Each agent gets a DQNPolicy attached to agent.policy, which encapsulates the
-    online and target Q-networks together with epsilon-greedy action selection.
+    online and target Q-models together with epsilon-greedy action selection.
     RLAgent.act() calls policy.get_action_and_value() automatically.
 
     Hyperparameters:
@@ -429,7 +429,6 @@ class QMIX(RLAlgorithm):
 
         for agent in agents:
             agent.replay_buffer = shared_replay
-            agent.optimizer = None
 
     def on_step_collect(  # noqa: PLR0914
         self, agents: list[RLAgent], results: dict[RLAgent, StepResult]
@@ -508,7 +507,7 @@ class QMIX(RLAlgorithm):
 
     def on_step_update(self, agents: list[RLAgent]) -> None:  # noqa: PLR0914, PLR0915
         """
-        Update per-agent Q-networks and the mixer from the shared replay buffer.
+        Update per-agent Q-models and the mixer from the shared replay buffer.
 
         Raises:
             RuntimeError: if required replay buffer is missing.
