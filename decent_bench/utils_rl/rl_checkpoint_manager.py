@@ -61,11 +61,11 @@ class RLCheckpointManager:
           This preserves shared object references and ensures consistency between algorithm and network
           states at each checkpoint. The checkpoint data is a dictionary with the following structure:
 
-            - algorithm: :class:`~decent_bench.distributed_algorithms.Algorithm`
+            - algorithm: :class:`~decent_bench.algorithms.Algorithm`
             - network: :class:`~decent_bench.networks.Network`
             - iteration: iteration
 
-          where "algorithm" is the :class:`~decent_bench.distributed_algorithms.Algorithm` object with its internal
+          where "algorithm" is the :class:`~decent_bench.algorithms.Algorithm` object with its internal
           state at the checkpoint, "network" is the :class:`~decent_bench.networks.Network` object with agent states
           at the checkpoint and "iteration" is the iteration number of the checkpoint.
         - **progress.json**: Tracks the last completed iteration within a trial.

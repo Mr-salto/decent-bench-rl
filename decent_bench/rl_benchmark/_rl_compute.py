@@ -7,7 +7,7 @@ import numpy as np
 from decent_bench.agents import AgentMetricsView
 from decent_bench.benchmark import BenchmarkProblem
 from decent_bench.benchmark._metric_result import MetricResult
-from decent_bench.distributed_algorithms import Algorithm
+from decent_bench.algorithms import Algorithm
 from decent_bench.metrics import Metric, compute_plots, compute_tables
 from decent_bench.networks import Network
 from decent_bench.rl_agents import RLAgentMetricsView
