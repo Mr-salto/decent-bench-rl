@@ -237,24 +237,17 @@ class RLCheckpointManager:
         with problem_path.open("rb") as f:
             payload = pickle.load(f)  # noqa: S301
 
-        required_keys = ("env_kind", "n_agents", "env_config", "agents")
+        required_keys = ("env_kind", "env_config", "agents")
         missing_keys = [key for key in required_keys if key not in payload]
         if missing_keys:
             raise ValueError(f"Invalid benchmark problem payload: missing keys {missing_keys}")
 
         env_kind = payload["env_kind"]
-        n_agents = int(payload["n_agents"])
         env_config = dict(payload["env_config"])
         agents = payload["agents"]
 
-        if len(agents) != n_agents:
-            raise ValueError(
-                f"Corrupted benchmark problem: n_agents is {n_agents} but serialized agents has {len(agents)} entries"
-            )
-
         return RLBenchmarkProblem(
             env_kind=env_kind,
-            n_agents=n_agents,
             agents=agents,
             env_config=env_config,
         )
@@ -597,7 +590,6 @@ class RLCheckpointManager:
         problem_path = self.checkpoint_dir / "benchmark_problem.pkl"
         payload = {
             "env_kind": problem.env_kind,
-            "n_agents": problem.n_agents,
             "env_config": problem.env_config,
             "agents": problem.agents,
         }

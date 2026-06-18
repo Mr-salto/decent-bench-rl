@@ -2,8 +2,6 @@ from ._rl_benchmark import benchmark, resume_benchmark
 from ._rl_benchmark_problem import (
     RLBenchmarkProblem,
     create_mpe_problem,
-    create_simple_adversary_problem,
-    create_simple_spread_problem,
 )
 from ._rl_benchmark_result import RLBenchmarkResult
 from ._rl_compute import compute_metrics
@@ -17,6 +15,4 @@ __all__ = [  # noqa: RUF022
     "compute_metrics",
     "display_metrics",
     "create_mpe_problem",
-    "create_simple_spread_problem",
-    "create_simple_adversary_problem",
 ]

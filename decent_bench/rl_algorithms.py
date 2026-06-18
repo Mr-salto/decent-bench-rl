@@ -169,7 +169,7 @@ class RLAlgorithm(ABC):
 
 
 @dataclass(eq=False)
-class IndependentDQN(RLAlgorithm):
+class IDQN(RLAlgorithm):
     """
     Independent DQN (IDQN) algorithm — each agent trains its own Q-model using its local replay buffer.
 

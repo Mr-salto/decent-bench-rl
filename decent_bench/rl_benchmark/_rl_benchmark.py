@@ -118,7 +118,7 @@ def resume_benchmark(
         )
 
     LOGGER.info("Resuming benchmark execution")
-    LOGGER.debug(f"Nr of agents: {problem.n_agents}")
+    LOGGER.debug(f"Nr of agents: {len(problem.agents)}")
 
     if runtime_metrics is not None and len(runtime_metrics) == 0:
         runtime_metrics = None
@@ -184,7 +184,7 @@ def benchmark(
     log_listener, manager, mp_context = _init_logging_and_multiprocessing(log_level, max_processes)
 
     LOGGER.info("Starting benchmark execution")
-    LOGGER.debug(f"Nr of agents: {benchmark_problem.n_agents}")
+    LOGGER.debug(f"Nr of agents: {len(benchmark_problem.agents)}")
 
     if runtime_metrics is not None and len(runtime_metrics) == 0:
         runtime_metrics = None
@@ -339,12 +339,7 @@ def _run_trial(  # noqa: PLR0917
     _set_seed(trial_seed, set_global_seed=False)
 
     alg = deepcopy(algorithm)
-
     agents = deepcopy(problem.agents)
-    if len(agents) != problem.n_agents:
-        raise ValueError(
-            f"Problem n_agents ({problem.n_agents}) does not match number of template agents ({len(agents)})."
-        )
 
     env = problem.create_env(agents=agents)
 

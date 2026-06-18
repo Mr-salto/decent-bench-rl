@@ -21,14 +21,12 @@ class RLBenchmarkProblem:
 
     Args:
         env_kind: environment identifier.
-        n_agents: number of agents in the environment
         agents: template RL agents used to create per-trial deep copies.
         env_config: minimal configuration required to instantiate the underlying Parallel env.
 
     """
 
     env_kind: str
-    n_agents: int
     agents: list[RLAgent]
     env_config: dict[str, Any]
 
@@ -44,62 +42,6 @@ class RLBenchmarkProblem:
 
         trial_agents = deepcopy(self.agents) if agents is None else agents
         return MPE(agents=trial_agents, env_factory=env_factory)
-
-
-def create_simple_spread_problem(
-    n_agents: int = 1,
-    *,
-    render_mode: str | None = RENDER_MODE,
-) -> RLBenchmarkProblem:
-    """
-    Create out-of-the-box simple-spread problems using MPE.
-
-    Args:
-        n_agents: number of agents in the environment
-        render_mode: MPE render mode.
-
-    """
-    env_config = {
-        "N": n_agents,
-        "render_mode": render_mode,
-    }
-    agents = [RLAgent(i, activation=AlwaysActive()) for i in range(n_agents)]
-
-    return RLBenchmarkProblem(
-        env_kind="simple_spread",
-        n_agents=n_agents,
-        agents=agents,
-        env_config=env_config,
-    )
-
-
-def create_simple_adversary_problem(
-    n_good_agents: int = 2,
-    *,
-    render_mode: str | None = RENDER_MODE,
-) -> RLBenchmarkProblem:
-    """
-    Create an out-of-the-box simple-adversary problem using MPE.
-
-    Args:
-        n_good_agents: number of cooperative (non-adversary) agents.
-        render_mode: MPE render mode.
-
-    """
-    # simple_adversary_v3 is used with one adversary by design.
-    total_agents = n_good_agents + 1
-    env_config = {
-        "N": n_good_agents,
-        "render_mode": render_mode,
-    }
-    agents = [RLAgent(i, activation=AlwaysActive()) for i in range(total_agents)]
-
-    return RLBenchmarkProblem(
-        env_kind="simple_adversary",
-        n_agents=total_agents,
-        agents=agents,
-        env_config=env_config,
-    )
 
 
 def create_mpe_problem(
@@ -137,7 +79,6 @@ def create_mpe_problem(
 
     return RLBenchmarkProblem(
         env_kind=env_kind,
-        n_agents=n_agents,
         agents=agents,
         env_config=env_config,
     )

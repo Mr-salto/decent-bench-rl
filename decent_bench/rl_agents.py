@@ -21,7 +21,6 @@ class LinearDecreasingEpsilon:
         return max(0.05, 1 - step / 1000)
 
 
-# class RLAgent(agents.Agent):
 class RLAgent(Agent):
     """
     Algorithm-agnostic RL Agent.
