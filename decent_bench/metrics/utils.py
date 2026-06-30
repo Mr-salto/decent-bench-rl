@@ -1,5 +1,6 @@
+import operator
 from collections.abc import Sequence
-from functools import cache
+from functools import lru_cache, reduce
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -11,13 +12,17 @@ from rich.table import Column
 from sklearn import metrics as sk_metrics
 
 import decent_bench.utils.interoperability as iop
-from decent_bench.agents import AgentMetricsView
+from decent_bench.costs import Cost, EmpiricalRiskCost
+from decent_bench.metrics._metrics_view import AgentMetricsView
 from decent_bench.utils.array import Array
 from decent_bench.utils.logger import LOGGER
 from decent_bench.utils.types import Dataset
 
 if TYPE_CHECKING:
     from decent_bench.benchmark import BenchmarkProblem
+
+
+CACHE_MAX_SIZE = 50_000
 
 
 class MetricProgressBar(Progress):
@@ -44,24 +49,16 @@ class MetricProgressBar(Progress):
 def _clear_caches() -> None:
     """Clear module-level functools caches used by metric utilities."""
     x_mean.cache_clear()
-    _x_error.cache_clear()
     _predict_agent.cache_clear()
 
 
-def single(values: Sequence[float]) -> float:
-    """
-    Assert that *values* contain exactly one element and return it.
-
-    Raises:
-        ValueError: if there isn't exactly one element in *values*
-
-    """
-    if len(values) != 1:
-        raise ValueError("Argument `values` must have exactly 1 element")
-    return values[0]
+def _drifts(agents: Sequence[AgentMetricsView], server: AgentMetricsView, iteration: int) -> list[float]:
+    """Calculate each agent's distance from the server state at *iteration*."""
+    server_x = server.x_history[iteration]
+    return [float(iop.norm(agent.x_history[iteration] - server_x)) for agent in agents]
 
 
-@cache
+@lru_cache(maxsize=CACHE_MAX_SIZE)
 def x_mean(agents: tuple[AgentMetricsView, ...], iteration: int = -1) -> Array:
     """
     Calculate the mean x at *iteration* (or using the agents' final x if *iteration* is -1).
@@ -77,7 +74,7 @@ def x_mean(agents: tuple[AgentMetricsView, ...], iteration: int = -1) -> Array:
     if len(all_x_at_iter) == 0:
         raise ValueError(f"No agent reached iteration {iteration}")
 
-    return iop.mean(iop.stack(all_x_at_iter), dim=0)
+    return reduce(operator.add, all_x_at_iter) / len(all_x_at_iter)
 
 
 def _regret(agents: Sequence[AgentMetricsView], problem: "BenchmarkProblem", iteration: int = -1) -> float:
@@ -91,9 +88,12 @@ def _regret(agents: Sequence[AgentMetricsView], problem: "BenchmarkProblem", ite
     """
     x_opt = problem.x_optimal
     mean_x = x_mean(tuple(agents), iteration)
-    optimal_cost = sum(a.cost.function(x_opt) for a in agents)  # type: ignore[arg-type, misc]
-    actual_cost = sum(a.cost.function(mean_x) for a in agents)
-    return actual_cost - optimal_cost
+    optimal_cost, actual_cost = 0.0, 0.0
+    for a in agents:
+        kwargs = {"indices": "all"} if isinstance(a.cost, EmpiricalRiskCost) else {}
+        optimal_cost += a.cost.function(x_opt, **kwargs)  # type: ignore[arg-type]
+        actual_cost += a.cost.function(mean_x, **kwargs)
+    return (actual_cost - optimal_cost) / len(agents)
 
 
 def _gradient_norm(agents: Sequence[AgentMetricsView], iteration: int = -1) -> float:
@@ -102,29 +102,52 @@ def _gradient_norm(agents: Sequence[AgentMetricsView], iteration: int = -1) -> f
 
     Global gradient norm is defined as:
 
-    .. include:: snippets/global_gradient_optimality.rst
+    .. include:: /snippets/global_gradient_optimality.rst
     """
     mean_x = x_mean(tuple(agents), iteration)
-    grad_avg = sum(iop.to_numpy(a.cost.gradient(mean_x)) for a in agents) / len(agents)
-    return float(la.norm(grad_avg)) ** 2
+    gradients = []
+    for a in agents:
+        kwargs = {"indices": "all"} if isinstance(a.cost, EmpiricalRiskCost) else {}
+        gradients.append(a.cost.gradient(mean_x, **kwargs))
+    grad_avg = reduce(operator.add, gradients) / len(gradients)
+    return float(iop.norm(grad_avg))
 
 
-@cache
-def _x_error(agent: AgentMetricsView, problem: "BenchmarkProblem", iteration: int = -1) -> float:
+def _x_error(agents: Sequence[AgentMetricsView], problem: "BenchmarkProblem", iteration: int = -1) -> float:
     r"""
-    Calculate x error at *iteration* (or at the agent's final x if *iteration* is -1).
+    Calculate x error at *iteration* (or at the final x if *iteration* is -1).
 
     .. math::
-        \|\mathbf{x}_k - \mathbf{x}^\star\|
+        \|\mathbf{\bar{x}}_k - \mathbf{x}^\star\|
 
-    where :math:`\mathbf{x}_k` is the agent's local x at iteration k,
+    where :math:`\mathbf{\bar{x}}_k` is the mean of the agents' local x at iteration k,
     and :math:`\mathbf{x}^\star` is the optimal x defined in the *problem*.
 
     """
-    agent_iteration = agent.x_history.max() if iteration == -1 else iteration
-    x_at_iteration = iop.to_numpy(agent.x_history[agent_iteration])
-    opt_x = iop.to_numpy(problem.x_optimal)  # type: ignore[arg-type]
-    return float(la.norm(x_at_iteration - opt_x))
+    mean_x = x_mean(tuple(agents), iteration)
+    return float(iop.norm(mean_x - problem.x_optimal))  # type: ignore[operator]
+
+
+def _observed_rounds(agents: Sequence[AgentMetricsView]) -> int:
+    """
+    Get the number of completed rounds observed in the agents' histories.
+
+    The initial snapshot is stored at iteration 0, so the maximum recorded iteration corresponds to the number of
+    completed algorithm rounds when the final snapshot is present.
+    """
+    if not agents:
+        return 0
+    return max(agent.x_history.max() for agent in agents)
+
+
+def _losses(agents: Sequence[AgentMetricsView], iteration: int) -> list[float]:
+    """Calculate each agent's loss at *iteration*."""
+    return [
+        agent.cost.function(agent.x_history[iteration], indices="all")
+        if isinstance(agent.cost, EmpiricalRiskCost)
+        else agent.cost.function(agent.x_history[iteration])
+        for agent in agents
+    ]
 
 
 def _accuracy(agents: Sequence[AgentMetricsView], problem: "BenchmarkProblem", iteration: int) -> list[float]:
@@ -182,6 +205,37 @@ def _mse(agents: Sequence[AgentMetricsView], problem: "BenchmarkProblem", iterat
             return [np.nan for _ in agents]
         ret.append(sk_metrics.mean_squared_error(test_y, preds))
     return ret
+
+
+def _predict_cost_at_x(cost: Cost, x: Array, problem: "BenchmarkProblem") -> NDArray[float64]:
+    """Get predictions from *cost* at an arbitrary model state *x*."""
+    test_x, _ = _split_dataset(problem.test_data)  # type: ignore[arg-type]
+    return iop.to_numpy(cost.predict(x, list(test_x)))  # type: ignore[attr-defined]
+
+
+def _accuracy_at_x(cost: Cost, x: Array, problem: "BenchmarkProblem") -> float:
+    """Calculate accuracy from *cost* predictions at an arbitrary model state *x*."""
+    _, test_y = _split_dataset(problem.test_data)  # type: ignore[arg-type]
+    preds = _predict_cost_at_x(cost, x, problem)
+    if np.any(~np.isfinite(preds)):
+        LOGGER.warning(
+            "Predictions contain NaN or Inf values, which are not valid for Accuracy calculation, "
+            "returning NaN for Accuracy"
+        )
+        return np.nan
+    return float(sk_metrics.accuracy_score(test_y, preds))
+
+
+def _mse_at_x(cost: Cost, x: Array, problem: "BenchmarkProblem") -> float:
+    """Calculate MSE from *cost* predictions at an arbitrary model state *x*."""
+    _, test_y = _split_dataset(problem.test_data)  # type: ignore[arg-type]
+    preds = _predict_cost_at_x(cost, x, problem)
+    if np.any(~np.isfinite(preds)):
+        LOGGER.warning(
+            "Predictions contain NaN or Inf values, which are not valid for MSE calculation, returning NaN for MSE"
+        )
+        return np.nan
+    return float(sk_metrics.mean_squared_error(test_y, preds))
 
 
 def _precision(agents: Sequence[AgentMetricsView], problem: "BenchmarkProblem", iteration: int) -> list[float]:
@@ -261,7 +315,7 @@ def _split_dataset(data: Dataset) -> tuple[tuple[Array, ...], NDArray[float64]]:
     return test_x, test_y
 
 
-@cache
+@lru_cache(maxsize=CACHE_MAX_SIZE)
 def _predict_agent(agent: AgentMetricsView, iteration: int, problem: "BenchmarkProblem") -> NDArray[float64]:
     """Get the predictions of *agent* at *iteration*. Cached since predictions may be expensive."""
     test_x, _ = _split_dataset(problem.test_data)  # type: ignore[arg-type]
@@ -305,7 +359,7 @@ def linear_convergence_rate(y: Sequence[float]) -> float:
         >>> for alg, results in metric_results.plot_results.items():
         >>>     for metric, stat_results in results.items():
         >>>         if type(metric) == metric_library.GradientNorm:
-        >>>             print(f"\t- {alg.name}: {metric_utils.linear_convergence_rate(stat_results[1])}")
+        >>>             print(f"\t- {alg.name}: {utils.linear_convergence_rate(stat_results[1])}")
 
     """
     y_array: NDArray[float64] = np.asarray(y, dtype=float64)
@@ -427,13 +481,17 @@ def _fit_elbow_curve_given_breakpoint(y: NDArray[float64], b: int) -> tuple[NDAr
     m = len(y)  # num. datapoints
 
     # build the regression matrix, assuming the breakpoint is b
-    R: NDArray[float64] = np.hstack((  # noqa: N806
-        np.vstack((
-            np.arange(0, b + 1, 1).reshape((b + 1, 1)),
-            b * np.ones((m - b - 1, 1)),
-        )),
-        np.ones((m, 1)),
-    ))
+    R: NDArray[float64] = np.hstack(  # noqa: N806
+        (
+            np.vstack(
+                (
+                    np.arange(0, b + 1, 1).reshape((b + 1, 1)),
+                    b * np.ones((m - b - 1, 1)),
+                )
+            ),
+            np.ones((m, 1)),
+        )
+    )
 
     # analytical expression for inverse of R.T @ R
     S_00 = b * (b + 1) * (2 * b + 1) / 6.0 + (m - b - 1) * b**2  # noqa: N806

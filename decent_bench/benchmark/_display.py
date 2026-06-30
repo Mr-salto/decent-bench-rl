@@ -103,7 +103,7 @@ def display_metrics(  # noqa: PLR0912
         Therefore the computational cost could be seen as the number of operations performed (similar to FLOPS) but
         weighted by the time or energy it takes to perform them on the specific hardware.
 
-        .. include:: snippets/computational_cost.rst
+        .. include:: /snippets/computational_cost.rst
 
         If ``computational_cost`` is provided and ``compare_iterations_and_computational_cost`` is ``True``, each metric
         will be plotted twice: once against computational cost and once against iterations.
