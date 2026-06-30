@@ -147,10 +147,22 @@ class QModel(BaseModel):
         self._module = nn.Sequential(self.trunk, self.head)
         # Trunk outputs features consumed by head; optimizer parameters come from the module tree.
 
-        self._init_weights()
+        self._init_weights_orthogonal()
         self.move_to_device(self.device)
 
-    def _init_weights(self) -> None:
+
+    # Orthogonal weight init with per-layer gains
+    def _init_weights_orthogonal(self) -> None:
+        for m in self.trunk.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=math.sqrt(2))
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+        nn.init.orthogonal_(self.head.weight, gain=1.0)
+        if self.head.bias is not None:
+            nn.init.constant_(self.head.bias, 0.0)
+
+    def _init_weights_kaiming(self) -> None:
         for m in self.trunk.modules():
             if isinstance(m, nn.Linear):
                 nn.init.kaiming_uniform_(m.weight)
@@ -253,10 +265,10 @@ class DQNPolicy(BaseModel):
         self.q_network.move_to_device(device)
         self.target_q_network.move_to_device(device)
 
-    def update_epsilon(self, step: int) -> None:
+    def update_epsilon(self, step: int, decay_steps: int) -> None:
         """Decay epsilon via schedule if set."""
         if self.epsilon_schedule is not None:
-            self.epsilon = float(self.epsilon_schedule(step))
+            self.epsilon = float(self.epsilon_schedule(step, decay_steps))
 
     def sync_target(self) -> None:
         """Hard-copy online model weights into the target model."""
@@ -457,7 +469,7 @@ class ActorCritic(BaseModel):
             "value_head": self.value_head,
         })
 
-        self._init_weights()
+        self._init_weights_orthogonal()
         self.move_to_device(self.device)
 
     def _build_mlp(self, input_dim: int) -> tuple[nn.Sequential, int]:
@@ -469,8 +481,26 @@ class ActorCritic(BaseModel):
         trunk = nn.Sequential(*layers)
         return trunk, in_dim
 
-    # Orthogonal weight init could be added instead
-    def _init_weights(self) -> None:
+    # Orthogonal weight init with per-layer gains
+    def _init_weights_orthogonal(self) -> None:
+        # Init trunk layers (hidden) with gain=sqrt(2)
+        for trunk in (self.policy_trunk, self.value_trunk):
+            for m in trunk.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.orthogonal_(m.weight, gain=math.sqrt(2))
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0.0)
+
+        # Actor head: tiny gain → near-uniform policy at init (high entropy)
+        nn.init.orthogonal_(self.policy_head.weight, gain=0.01)
+        nn.init.constant_(self.policy_head.bias, 0.0)
+
+        # Critic head: gain=1.0 → value estimates start near zero, unbiased
+        nn.init.orthogonal_(self.value_head.weight, gain=1.0)
+        nn.init.constant_(self.value_head.bias, 0.0)
+
+    # Kaiming weight init
+    def _init_weights_kaiming(self) -> None:
         for m in self._module.modules():
             if isinstance(m, nn.Linear):
                 nn.init.kaiming_uniform_(m.weight)

@@ -268,7 +268,7 @@ class IDQN(RLAlgorithm):
         """
         for agent in agents:
             policy: DQNPolicy = agent.policy
-            policy.update_epsilon(agent.global_step)
+            policy.update_epsilon(agent.global_step, decay_steps=0.25*self.episodes*self.episode_length)
 
             replay_buffer = agent.replay_buffer
             if replay_buffer.size() < self.replay_start_size or agent.global_step % self.train_freq != 0:
@@ -518,7 +518,7 @@ class QMIX(RLAlgorithm):
             raise RuntimeError("QMIX requires a shared replay buffer.")
 
         for agent in agents:
-            agent.policy.update_epsilon(agent.global_step)
+            agent.policy.update_epsilon(agent.global_step, decay_steps=0.25*self.episodes*self.episode_length)
 
         if replay_buffer.size() < self.replay_start_size or agents[0].global_step % self.train_freq != 0:
             return
@@ -580,7 +580,23 @@ class QMIX(RLAlgorithm):
             params = list(mixer.parameters())
             for agent in agents:
                 params.extend(list(agent.policy.parameters()))
-            clip_grad_norm_(params, max_norm=10.0)
+            pre_clip_norm = torch.nn.utils.clip_grad_norm_(params, max_norm=float('inf'))
+            clip_grad_norm_(params, max_norm=0.1)
+
+            # -- DIAGNOSTICS --
+            if agents[0].dqn_train_steps % 5000 == 0 and agents[0].dqn_train_steps > 0:
+                print(
+                    f"[QMIX] grad_norm_pre_clip={pre_clip_norm:.3f} | "
+                    f"[QMIX] env_step={agents[0].global_step} | "
+                    f"train_step={agents[0].dqn_train_steps} | "
+                    f"ε={agents[0].policy.epsilon:.4f} | "
+                    f"loss={loss.item():.5f} | "
+                    f"q_tot=[μ={q_tot.mean():.2f}, σ={q_tot.std():.2f}, min={q_tot.min():.2f}, max={q_tot.max():.2f}]"
+                    f"q_tot=[{q_tot.min():.2f}, {q_tot.max():.2f}] | "
+                    f"td_target=[{td_target.min():.2f}, {td_target.max():.2f}] | "
+                    f"team_rew_scale={rewards_t.mean():.3f} | "
+                    f"buf={replay_buffer.size()}"
+                )
 
             optimizer.step()
 
@@ -752,7 +768,7 @@ class A2C(RLAlgorithm):
             loss.backward()  # type: ignore[no-untyped-call]
             clip_grad_norm_(policy.parameters(), max_norm=10.0)
             optimizer.step()
-
+            print(f"loss={loss.item():.5f}")
             agent.train_step += 1
             rollout.clear()
 

@@ -16,9 +16,9 @@ class LinearDecreasingEpsilon:
     def __init__(self, value: float):
         self.value = value
 
-    def __call__(self, step: int) -> float:
+    def __call__(self, step: int, decay_steps: int) -> float:
         """Return epsilon value for the provided global step."""
-        return max(0.05, 1 - step / 1000)
+        return max(0.05, 1 - step / decay_steps)
 
 
 class RLAgent(Agent):
@@ -34,7 +34,7 @@ class RLAgent(Agent):
 
     def __init__(
         self,
-        agent_id: int,
+        # agent_id: int,
         *,
         action_space: Any = None,  # noqa: ANN401
         observation_space: Any = None,  # noqa: ANN401
@@ -44,7 +44,7 @@ class RLAgent(Agent):
     ):
         cost = ZeroCost(shape=(1,))
         super().__init__(
-            agent_id=agent_id,
+            # agent_id=agent_id,
             cost=cost,
             activation=activation,
             state_snapshot_period=state_snapshot_period,
