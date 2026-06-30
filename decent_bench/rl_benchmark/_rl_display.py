@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
-from decent_bench.benchmark._display import display_metrics as _display_metrics
+from decent_bench.benchmark import display_metrics as _display_metrics
 from decent_bench.benchmark._metric_result import MetricResult
 from decent_bench.metrics import ComputationalCost, Metric
 

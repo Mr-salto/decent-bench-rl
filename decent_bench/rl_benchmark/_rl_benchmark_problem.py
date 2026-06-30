@@ -75,7 +75,7 @@ def create_mpe_problem(
     else:
         raise ValueError(f"Unknown env_kind: {env_kind}")
 
-    agents = [RLAgent(i, activation=AlwaysActive()) for i in range(n_agents)]
+    agents = [RLAgent(activation=AlwaysActive()) for _ in range(n_agents)]
 
     return RLBenchmarkProblem(
         env_kind=env_kind,

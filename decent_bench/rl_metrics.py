@@ -3,9 +3,9 @@ from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
-from decent_bench.agents import Agent, AgentMetricsView
-from decent_bench.metrics import Metric, RuntimeMetric, X, Y
-from decent_bench.metrics._metric import Statistic
+from decent_bench.agents import Agent
+from decent_bench.metrics import Metric, RuntimeMetric
+from decent_bench.metrics._metrics_view import NetworkMetricsView
 from decent_bench.rl_agents import RLAgentMetricsView
 
 if TYPE_CHECKING:
@@ -16,60 +16,57 @@ if TYPE_CHECKING:
 class RLMeanEpisodeReturn(Metric):
     """Mean episode return aggregated across agents."""
 
-    table_description: str = "Mean Episode Return"
-    plot_description: str = "Mean Episode Return"
+    description: str = "Mean Episode Return"
 
-    def __init__(self, statistics: Sequence[Statistic] = (np.average,)) -> None:
-        super().__init__(statistics=statistics, fmt=".2e", x_log=False, y_log=False)
+    def __init__(self) -> None:
+        super().__init__(fmt=".2e", x_log=False, y_log=False)
 
     @staticmethod
     def _common_episode_count(agents: Sequence[RLAgentMetricsView]) -> int:
         return min(len(agent.episode_return_history) for agent in agents)
 
-    def get_data_from_trial(
+    def compute(
         self,
-        agents: Sequence[AgentMetricsView],
+        rl_agent_view: list[RLAgentMetricsView],
         problem: "BenchmarkProblem",  # noqa: ARG002
-        iteration: int,
+        episode: int,
     ) -> Sequence[float]:
-        """Return per-trial mean return for the selected episode index."""
-        rl_agents = cast("Sequence[RLAgentMetricsView]", agents)
-        n_eps = self._common_episode_count(rl_agents)
+        """Return the mean episode return for the selected episode index."""
+        n_eps = self._common_episode_count(rl_agent_view)
 
-        if iteration == -1:
-            iteration = n_eps - 1
+        if episode == -1:
+            episode = n_eps - 1
 
         # Aggregate across agents for a single episode index.
-        return [float(np.mean([agent.episode_return_history[iteration] for agent in rl_agents]))]
+        return [float(np.mean([agent.episode_return_history[episode] for agent in rl_agent_view]))]
 
-    def get_plot_data(
+
+class RLSmoothMeanEpisodeReturn(Metric):
+    """Mean episode return aggregated across agents averaged over the last 20 episodes"""
+
+    description: str = "Smoothen Mean Episode Return"
+
+    def __init__(self) -> None:
+        super().__init__(fmt=".2e", x_log=False, y_log=False)
+
+    @staticmethod
+    def _common_episode_count(agents: Sequence[RLAgentMetricsView]) -> int:
+        return min(len(agent.episode_return_history) for agent in agents)
+
+    def compute(
         self,
-        agents: Sequence[AgentMetricsView],
+        rl_agent_view: list[RLAgentMetricsView],
         problem: "BenchmarkProblem",  # noqa: ARG002
-    ) -> Sequence[tuple[X, Y]]:
-        """Return episode-indexed mean returns for plotting."""
-        rl_agents = cast("Sequence[RLAgentMetricsView]", agents)
-        n_eps = self._common_episode_count(rl_agents)
-
-        # X-axis uses 1-based episode number for readability.
-        return [
-            (float(ep + 1), float(np.mean([agent.episode_return_history[ep] for agent in rl_agents])))
-            for ep in range(n_eps)
-        ]
-
-    def get_table_data(
-        self,
-        agents: Sequence[AgentMetricsView],
-        problem: "BenchmarkProblem",  # noqa: ARG002
+        episode: int,
     ) -> Sequence[float]:
-        """Return the final aggregated mean return for table display."""
-        rl_agents = cast("Sequence[RLAgentMetricsView]", agents)
-        n_eps = self._common_episode_count(rl_agents)
+        """Return the mean episode return for the selected episode index averaged over the last 20 episodes."""
+        n_eps = self._common_episode_count(rl_agent_view)
 
-        episode_means = [
-            float(np.mean([agent.episode_return_history[ep] for agent in rl_agents])) for ep in range(n_eps)
-        ]
-        return [episode_means[-1]]
+        if episode == -1:
+            episode = n_eps - 1
+
+        # Aggregate across agents for multiple episode indices.
+        return [float(np.mean([np.mean(agent.episode_return_history[max(0, episode-49):episode + 1]) for agent in rl_agent_view]))]
 
 
 class RuntimeMeanEpisodeReturn(RuntimeMetric):
