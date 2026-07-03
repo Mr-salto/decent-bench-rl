@@ -298,16 +298,30 @@ class IDQN(RLAlgorithm):
                 q_pred = q_values.gather(1, actions_t.unsqueeze(1)).squeeze(1)
 
                 with torch.no_grad():
+                    # Double DQN: online selects the action, target evaluates it
+                    next_actions = policy.q_network.torch_module(next_obs_t).argmax(dim=1, keepdim=True)
                     policy.target_q_network.torch_module.eval()
                     next_q_values = policy.target_q_network.torch_module(next_obs_t)  # [B, A]
-                    next_q_max, _ = next_q_values.max(dim=1)
+                    next_q_max = next_q_values.gather(1, next_actions).squeeze(1)
                     td_target = rewards_t + self.gamma * (1.0 - dones_t) * next_q_max
 
-                loss = functional.mse_loss(q_pred, td_target)
+                loss = functional.smooth_l1_loss(q_pred, td_target)
                 optimizer.zero_grad()
                 loss.backward()  # type: ignore[no-untyped-call]
                 clip_grad_norm_(policy.parameters(), max_norm=10.0)
                 optimizer.step()
+                
+                # -- DIAGNOSTICS --
+                if agent.dqn_train_steps % 10000 == 0 and agent.dqn_train_steps > 0:
+                    print(
+                        f"[IDQN] agent={agent.id} | env_step={agent.global_step} | "
+                        f"train_step={agent.dqn_train_steps} | "
+                        f"ε={policy.epsilon:.4f} | "
+                        f"loss={loss.item():.5f} | "
+                        f"q_pred=[{q_pred.min():.2f}, {q_pred.max():.2f}] | "
+                        f"td_target=[{td_target.min():.2f}, {td_target.max():.2f}] | "
+                        f"buf={replay_buffer.size()}"
+                    )
 
                 agent.train_step += 1
                 agent.dqn_train_steps += 1
@@ -352,7 +366,6 @@ class QMIX(RLAlgorithm):
     grad_updates_per_step: int = 1
     mixing_hidden_dim: int = 32
     hypernet_hidden_dim: int = 64
-    use_softplus: bool = True
     reward_agg: str = "mean"
     state_dim: int | None = None
     device: SupportedDevices = SupportedDevices.CPU
@@ -369,7 +382,6 @@ class QMIX(RLAlgorithm):
             state_dim=self.state_dim,
             mixing_hidden_dim=self.mixing_hidden_dim,
             hypernet_hidden_dim=self.hypernet_hidden_dim,
-            use_softplus=self.use_softplus,
             device=self.device,
         )
         target_mixer = QMixer(
@@ -377,7 +389,6 @@ class QMIX(RLAlgorithm):
             state_dim=self.state_dim,
             mixing_hidden_dim=self.mixing_hidden_dim,
             hypernet_hidden_dim=self.hypernet_hidden_dim,
-            use_softplus=self.use_softplus,
             device=self.device,
         )
         target_mixer.copy_from(mixer)
@@ -390,7 +401,7 @@ class QMIX(RLAlgorithm):
             policy = agent.policy
             params.extend(list(policy.parameters()))
 
-        optimizer = torch.optim.Adam(params, lr=self.lr)
+        optimizer = torch.optim.RMSprop(params, lr=self.lr, alpha=0.99, eps=1e-5) # was adam before
         for agent in agents:
             agent.optimizer = optimizer
 
@@ -533,33 +544,38 @@ class QMIX(RLAlgorithm):
             batch = replay_buffer.sample_batch(self.batch_size)
 
             dev = agents[0].policy.device
-            obs_t = iop.to_torch(batch["obs"], dev)
-            next_obs_t = iop.to_torch(batch["next_obs"], dev)
+            obs_per_agent = batch["obs"]        # list of n_agents tensors [B, obs_dim_i]
+            next_obs_per_agent = batch["next_obs"]
             actions_t = iop.to_torch(batch["actions"], dev).long()
             rewards_t = iop.to_torch(batch["rewards"], dev)
             dones_t = iop.to_torch(batch["dones"], dev).float()
             state_t = iop.to_torch(batch["state"], dev)
             next_state_t = iop.to_torch(batch["next_state"], dev)
 
-            if obs_t.dim() == 2:
-                obs_t = obs_t.unsqueeze(1)
-                next_obs_t = next_obs_t.unsqueeze(1)
-                actions_t = actions_t.unsqueeze(1)
+            # if obs_t.dim() == 2:
+            #     obs_t = obs_t.unsqueeze(1)
+            #     next_obs_t = next_obs_t.unsqueeze(1)
+            #     actions_t = actions_t.unsqueeze(1)
 
             agent_qs: list[torch.Tensor] = []
             next_agent_qs: list[torch.Tensor] = []
 
             for idx, agent in enumerate(agents):
+                obs_i = iop.to_torch(obs_per_agent[idx], dev)       # [B, obs_dim_idx]
+                next_obs_i = iop.to_torch(next_obs_per_agent[idx], dev)
+
                 policy = agent.policy
                 policy.q_network.torch_module.train()
-                q_all = policy.q_network.torch_module(obs_t[:, idx, ...])
+                q_all = policy.q_network.torch_module(obs_i)
                 q_taken = q_all.gather(1, actions_t[:, idx].unsqueeze(1)).squeeze(1)
                 agent_qs.append(q_taken)
 
                 with torch.no_grad():
+                    # Double DQN: online selects, target evaluates
+                    next_actions = policy.q_network.torch_module(next_obs_i).argmax(dim=1, keepdim=True)
                     policy.target_q_network.torch_module.eval()
-                    next_q_all = policy.target_q_network.torch_module(next_obs_t[:, idx, ...])
-                    next_q_max, _ = next_q_all.max(dim=1)
+                    next_q_all = policy.target_q_network.torch_module(next_obs_i)
+                    next_q_max = next_q_all.gather(1, next_actions).squeeze(1)
                     next_agent_qs.append(next_q_max)
 
             agent_qs_t = torch.stack(agent_qs, dim=1)
@@ -573,7 +589,7 @@ class QMIX(RLAlgorithm):
                 target_q_tot = target_mixer.forward_torch(next_agent_qs_t, next_state_t)
                 td_target = rewards_t + self.gamma * (1.0 - dones_t) * target_q_tot
 
-            loss = functional.mse_loss(q_tot, td_target)
+            loss = functional.smooth_l1_loss(q_tot, td_target)
             optimizer.zero_grad()
             loss.backward()  # type: ignore[no-untyped-call]
 
@@ -581,7 +597,7 @@ class QMIX(RLAlgorithm):
             for agent in agents:
                 params.extend(list(agent.policy.parameters()))
             pre_clip_norm = torch.nn.utils.clip_grad_norm_(params, max_norm=float('inf'))
-            clip_grad_norm_(params, max_norm=0.1)
+            clip_grad_norm_(params, max_norm=5)
 
             # -- DIAGNOSTICS --
             if agents[0].dqn_train_steps % 5000 == 0 and agents[0].dqn_train_steps > 0:

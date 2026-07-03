@@ -158,7 +158,7 @@ class QModel(BaseModel):
                 nn.init.orthogonal_(m.weight, gain=math.sqrt(2))
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.0)
-        nn.init.orthogonal_(self.head.weight, gain=1.0)
+        nn.init.orthogonal_(self.head.weight, gain=0.01)
         if self.head.bias is not None:
             nn.init.constant_(self.head.bias, 0.0)
 
@@ -322,14 +322,12 @@ class QMixer(BaseModel):
         mixing_hidden_dim: int = 32,
         hypernet_hidden_dim: int = 64,
         device: SupportedDevices = SupportedDevices.CPU,
-        use_softplus: bool = True,
     ) -> None:
         super().__init__(obs_dim=state_dim, n_actions=n_agents, device=device)
         self.n_agents = int(n_agents)
         self.state_dim = int(state_dim)
         self.mixing_hidden_dim = int(mixing_hidden_dim)
         self.hypernet_hidden_dim = int(hypernet_hidden_dim)
-        self.use_softplus = bool(use_softplus)
 
         self.hyper_w1 = self._make_hypernet(
             out_dim=self.n_agents * self.mixing_hidden_dim,
@@ -355,6 +353,7 @@ class QMixer(BaseModel):
             "hyper_b2": self.hyper_b2,
         })
 
+        self._init_weights()
         self.move_to_device(self.device)
 
     def _make_hypernet(self, out_dim: int, hidden_dim: int) -> nn.Module:
@@ -366,10 +365,18 @@ class QMixer(BaseModel):
             nn.Linear(hidden_dim, out_dim),
         )
 
+    def _init_weights(self) -> None:
+        """
+        Initialize bias hypernets to output near-zero at init.
+        """
+        for hypernet in [self.hyper_w1, self.hyper_b1, self.hyper_w2, self.hyper_b2]:
+            final_layer = hypernet[-1] if isinstance(hypernet, nn.Sequential) else hypernet
+            if isinstance(final_layer, nn.Linear):
+                nn.init.orthogonal_(final_layer.weight, gain=0.01)
+                nn.init.constant_(final_layer.bias, 0.0)
+
     def _enforce_nonneg(self, w: torch.Tensor) -> torch.Tensor:
-        if self.use_softplus:
-            return F.softplus(w)
-        return torch.abs(w)
+        return F.relu(w)
 
     def forward_torch(self, agent_qs: torch.Tensor, states: torch.Tensor) -> torch.Tensor:
         """

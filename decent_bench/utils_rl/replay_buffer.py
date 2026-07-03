@@ -149,15 +149,23 @@ class JointReplayBuffer:
             raise ValueError("JointReplayBuffer received mismatched agent dimensions.")
 
         framework, device = iop.framework_device_of_array(obs[0])
-        obs_batch = iop.stack(obs, dim=0)
+        # obs_batch = iop.stack(obs, dim=0)
+        obs_batch = [iop.to_array(o, framework, device) for o in obs]
 
-        next_obs_fixed: list[Array] = []
-        for obs_item, next_obs_item in zip(obs, next_obs, strict=False):
-            if next_obs_item is None:
-                next_obs_fixed.append(iop.zeros_like(obs_item))
-            else:
-                next_obs_fixed.append(next_obs_item)
-        next_obs_batch = iop.stack(next_obs_fixed, dim=0)
+        next_obs_batch = [
+            iop.to_array(no, framework, device)
+            if no is not None
+            else iop.zeros_like(o)
+            for o, no in zip(obs, next_obs)
+        ]
+
+        # next_obs_fixed: list[Array] = []
+        # for obs_item, next_obs_item in zip(obs, next_obs, strict=False):
+        #     if next_obs_item is None:
+        #         next_obs_fixed.append(iop.zeros_like(obs_item))
+        #     else:
+        #         next_obs_fixed.append(next_obs_item)
+        # next_obs_batch = iop.stack(next_obs_fixed, dim=0)
 
         actions_np = np.array([int(a) for a in actions], dtype=np.int64)
         actions_batch = iop.to_array(actions_np, framework, device)
@@ -216,11 +224,21 @@ class JointReplayBuffer:
             infos_list,
         ) = map(list, zip(*transitions, strict=True))
 
-        framework, device = iop.framework_device_of_array(obs_list[0])
+        framework, device = iop.framework_device_of_array(obs_list[0][0])
 
-        obs_batch = iop.stack(obs_list, dim=0)
+
+        obs_per_agent = [
+                iop.stack([obs_list[b][i] for b in range(len(obs_list))], dim=0)
+                for i in range(self.n_agents)
+            ]
+        next_obs_per_agent = [
+                iop.stack([next_obs_list[b][i] for b in range(len(next_obs_list))], dim=0)
+                for i in range(self.n_agents)
+            ]
+
+        # obs_batch = iop.stack(obs_list, dim=0)
         actions_batch = iop.stack(actions_list, dim=0)
-        next_obs_batch = iop.stack(next_obs_list, dim=0)
+        # next_obs_batch = iop.stack(next_obs_list, dim=0)
 
         rewards_np = np.array(rewards_list, dtype=np.float32)
         dones_np = np.array(dones_list, dtype=np.bool_)
@@ -238,10 +256,10 @@ class JointReplayBuffer:
         next_state_batch = iop.stack(next_state_fixed, dim=0)
 
         return {
-            "obs": obs_batch,
+            "obs": obs_per_agent,
             "actions": actions_batch,
             "rewards": rewards_batch,
-            "next_obs": next_obs_batch,
+            "next_obs": next_obs_per_agent,
             "dones": dones_batch,
             "state": state_batch,
             "next_state": next_state_batch,
