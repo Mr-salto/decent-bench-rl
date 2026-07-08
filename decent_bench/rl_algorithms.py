@@ -199,6 +199,7 @@ class IDQN(RLAlgorithm):
     target_update_freq: int = 100
     train_freq: int = 1
     grad_updates_per_step: int = 1
+    parameter_sharing: bool = False
     device: SupportedDevices = SupportedDevices.CPU
 
     def initialize(self, agents: list[RLAgent]) -> None:
@@ -209,14 +210,15 @@ class IDQN(RLAlgorithm):
             RuntimeError: if an agent has no observation space.
 
         """
-        for agent in agents:
-            obs_space = agent.observation_space
+        if self.parameter_sharing:
+            obs_space = agents[0].observation_space
             if obs_space is None:
-                raise RuntimeError(f"Agent {agent.id} has no observation_space set during DQN.initialize()")
+                raise RuntimeError(f"Agent {agents[0].id} has no observation_space set during QMIX.initialize()")
             obs_dim = int(np.prod(obs_space.shape))
-            n_actions = agent.action_space.n
+            n_actions = agents[0].action_space.n
 
-            policy = DQNPolicy(
+            # One shared Q-network for all agents (standard in all reference implementations)
+            shared_policy = DQNPolicy(
                 obs_dim=obs_dim,
                 n_actions=n_actions,
                 hidden_sizes=(64, 64),
@@ -224,14 +226,39 @@ class IDQN(RLAlgorithm):
                 epsilon_schedule=LinearDecreasingEpsilon(1.0),
                 device=self.device,
             )
-            agent.attach_policy(policy)
 
-            opt = torch.optim.Adam(policy.parameters(), lr=self.lr)
-            agent.optimizer = opt
-            agent.dqn_train_steps = 0
+            opt = torch.optim.Adam(shared_policy.parameters(), lr=self.lr)
+            shared_buffer = SimpleReplayBuffer(capacity=100000)
 
-            if agent.replay_buffer is None:
-                agent.replay_buffer = SimpleReplayBuffer(capacity=100000)
+            for agent in agents:
+                agent.attach_policy(shared_policy)
+                agent.optimizer = opt
+                agent.replay_buffer = shared_buffer
+                agent.dqn_train_steps = 0
+        else:
+            for agent in agents:
+                obs_space = agent.observation_space
+                if obs_space is None:
+                    raise RuntimeError(f"Agent {agent.id} has no observation_space set during DQN.initialize()")
+                obs_dim = int(np.prod(obs_space.shape))
+                n_actions = agent.action_space.n
+
+                policy = DQNPolicy(
+                    obs_dim=obs_dim,
+                    n_actions=n_actions,
+                    hidden_sizes=(64, 64),
+                    epsilon=1.0,
+                    epsilon_schedule=LinearDecreasingEpsilon(1.0),
+                    device=self.device,
+                )
+                agent.attach_policy(policy)
+
+                if agent.replay_buffer is None:
+                    agent.replay_buffer = SimpleReplayBuffer(capacity=100000)
+
+                opt = torch.optim.Adam(agent.policy.parameters(), lr=self.lr)
+                agent.optimizer = opt
+                agent.dqn_train_steps = 0
 
     def on_step_collect(self, _agents: list[RLAgent], results: dict[RLAgent, StepResult]) -> None:
         """
@@ -269,6 +296,9 @@ class IDQN(RLAlgorithm):
         for agent in agents:
             policy: DQNPolicy = agent.policy
             policy.update_epsilon(agent.global_step, decay_steps=0.25*self.episodes*self.episode_length)
+
+            if self.parameter_sharing and agent is not agents[0]:
+                continue
 
             replay_buffer = agent.replay_buffer
             if replay_buffer.size() < self.replay_start_size or agent.global_step % self.train_freq != 0:
@@ -308,7 +338,7 @@ class IDQN(RLAlgorithm):
                 loss = functional.smooth_l1_loss(q_pred, td_target)
                 optimizer.zero_grad()
                 loss.backward()  # type: ignore[no-untyped-call]
-                clip_grad_norm_(policy.parameters(), max_norm=10.0)
+                clip_grad_norm_(policy.parameters(), max_norm=5.0)
                 optimizer.step()
                 
                 # -- DIAGNOSTICS --
@@ -367,6 +397,7 @@ class QMIX(RLAlgorithm):
     mixing_hidden_dim: int = 32
     hypernet_hidden_dim: int = 64
     reward_agg: str = "mean"
+    parameter_sharing: bool = False
     state_dim: int | None = None
     device: SupportedDevices = SupportedDevices.CPU
     qmix_mixer: QMixer | None = None
@@ -399,9 +430,11 @@ class QMIX(RLAlgorithm):
         params: list[torch.nn.Parameter] = list(mixer.parameters())
         for agent in agents:
             policy = agent.policy
+            if self.parameter_sharing and agent is not agents[0]:
+                continue
             params.extend(list(policy.parameters()))
 
-        optimizer = torch.optim.RMSprop(params, lr=self.lr, alpha=0.99, eps=1e-5) # was adam before
+        optimizer = torch.optim.Adam(params, lr=self.lr)
         for agent in agents:
             agent.optimizer = optimizer
 
@@ -413,16 +446,16 @@ class QMIX(RLAlgorithm):
             RuntimeError: if any agent has no observation space.
 
         """
-        obs_dims: list[int] = []
-        for agent in agents:
-            obs_space = agent.observation_space
-            if obs_space is None:
-                raise RuntimeError(f"Agent {agent.id} has no observation_space set during QMIX.initialize()")
-            obs_dim = int(np.prod(obs_space.shape))
-            obs_dims.append(obs_dim)
-            n_actions = agent.action_space.n
 
-            policy = DQNPolicy(
+        if self.parameter_sharing:
+            obs_space = agents[0].observation_space
+            if obs_space is None:
+                raise RuntimeError(f"Agent {agents[0].id} has no observation_space set during QMIX.initialize()")
+            obs_dim = int(np.prod(obs_space.shape))
+            n_actions = agents[0].action_space.n
+
+            # One shared Q-network for all agents (standard in all reference implementations)
+            shared_policy = DQNPolicy(
                 obs_dim=obs_dim,
                 n_actions=n_actions,
                 hidden_sizes=(64, 64),
@@ -430,8 +463,27 @@ class QMIX(RLAlgorithm):
                 epsilon_schedule=LinearDecreasingEpsilon(1.0),
                 device=self.device,
             )
-            agent.attach_policy(policy)
-            agent.dqn_train_steps = 0
+            for agent in agents:
+                agent.attach_policy(shared_policy)
+                agent.dqn_train_steps = 0
+        else:
+            for agent in agents:
+                obs_space = agent.observation_space
+                if obs_space is None:
+                    raise RuntimeError(f"Agent {agent.id} has no observation_space set during QMIX.initialize()")
+                obs_dim = int(np.prod(obs_space.shape))
+                n_actions = agent.action_space.n
+
+                policy = DQNPolicy(
+                    obs_dim=obs_dim,
+                    n_actions=n_actions,
+                    hidden_sizes=(64, 64),
+                    epsilon=1.0,
+                    epsilon_schedule=LinearDecreasingEpsilon(1.0),
+                    device=self.device,
+                )
+                agent.attach_policy(policy)
+                agent.dqn_train_steps = 0
 
         shared_replay = JointReplayBuffer(capacity=100000, n_agents=len(agents))
 
@@ -547,20 +599,17 @@ class QMIX(RLAlgorithm):
             obs_per_agent = batch["obs"]        # list of n_agents tensors [B, obs_dim_i]
             next_obs_per_agent = batch["next_obs"]
             actions_t = iop.to_torch(batch["actions"], dev).long()
-            rewards_t = iop.to_torch(batch["rewards"], dev)
+            rewards_t = iop.to_torch(batch["rewards"], dev) # rewards scaling
             dones_t = iop.to_torch(batch["dones"], dev).float()
             state_t = iop.to_torch(batch["state"], dev)
+            state_t = (state_t - state_t.mean()) / (state_t.std() + 1e-5) # state normalization
             next_state_t = iop.to_torch(batch["next_state"], dev)
-
-            # if obs_t.dim() == 2:
-            #     obs_t = obs_t.unsqueeze(1)
-            #     next_obs_t = next_obs_t.unsqueeze(1)
-            #     actions_t = actions_t.unsqueeze(1)
+            next_state_t = (next_state_t - next_state_t.mean()) / (next_state_t.std() + 1e-5) # state normalization
 
             agent_qs: list[torch.Tensor] = []
             next_agent_qs: list[torch.Tensor] = []
 
-            for idx, agent in enumerate(agents):
+            for idx, agent in enumerate(agents):            
                 obs_i = iop.to_torch(obs_per_agent[idx], dev)       # [B, obs_dim_idx]
                 next_obs_i = iop.to_torch(next_obs_per_agent[idx], dev)
 
@@ -588,14 +637,18 @@ class QMIX(RLAlgorithm):
                 target_mixer.torch_module.eval()
                 target_q_tot = target_mixer.forward_torch(next_agent_qs_t, next_state_t)
                 td_target = rewards_t + self.gamma * (1.0 - dones_t) * target_q_tot
+                td_target = torch.clamp(td_target, -100, 100)
 
-            loss = functional.smooth_l1_loss(q_tot, td_target)
+            loss = functional.mse_loss(q_tot, td_target)
             optimizer.zero_grad()
             loss.backward()  # type: ignore[no-untyped-call]
 
             params = list(mixer.parameters())
-            for agent in agents:
-                params.extend(list(agent.policy.parameters()))
+            if self.parameter_sharing:
+                params.extend(list(agents[0].policy.parameters()))
+            else:
+                for agent in agents:
+                    params.extend(list(agent.policy.parameters()))
             pre_clip_norm = torch.nn.utils.clip_grad_norm_(params, max_norm=float('inf'))
             clip_grad_norm_(params, max_norm=5)
 
@@ -621,8 +674,11 @@ class QMIX(RLAlgorithm):
                 agent.dqn_train_steps += 1
 
             if agents[0].dqn_train_steps % self.target_update_freq == 0:
-                for agent in agents:
-                    agent.policy.sync_target()
+                if self.parameter_sharing:
+                    agents[0].policy.sync_target()
+                else:
+                    for agent in agents:
+                        agent.policy.sync_target()
                 target_mixer.copy_from(mixer)
 
 

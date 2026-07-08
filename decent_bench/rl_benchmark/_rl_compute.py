@@ -25,8 +25,8 @@ if TYPE_CHECKING:
 
 
 
-DEFAULT_RL_TABLE_METRICS: list[Metric] = [RLMeanEpisodeReturn(), RLSmoothMeanEpisodeReturn()]
-DEFAULT_RL_PLOT_METRICS: list[Metric] = [RLMeanEpisodeReturn(), RLSmoothMeanEpisodeReturn()]
+DEFAULT_RL_TABLE_METRICS: list[Metric] = [RLSmoothMeanEpisodeReturn()]
+DEFAULT_RL_PLOT_METRICS: list[Metric] = [RLSmoothMeanEpisodeReturn()]
 
 
 def compute_metrics(

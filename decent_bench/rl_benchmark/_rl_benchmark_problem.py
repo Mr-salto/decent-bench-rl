@@ -2,7 +2,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-from mpe2 import simple_adversary_v3, simple_spread_v3
+from mpe2 import simple_adversary_v3, simple_formation_v1, simple_spread_v3
 
 from decent_bench.environments import MPE
 from decent_bench.rl_agents import RLAgent
@@ -38,6 +38,8 @@ class RLBenchmarkProblem:
                 return simple_spread_v3.parallel_env(**self.env_config)
             if self.env_kind == "simple_adversary":
                 return simple_adversary_v3.parallel_env(**self.env_config)
+            if self.env_kind == "simple_formation":
+                return simple_formation_v1.parallel_env(**self.env_config)
             raise ValueError(f"Unsupported env_kind: {self.env_kind}")
 
         trial_agents = deepcopy(self.agents) if agents is None else agents
@@ -70,6 +72,12 @@ def create_mpe_problem(
         env_config = {
             **env_kwargs,
             "N": n_agents - 1,
+            "render_mode": render_mode,
+        }
+    elif env_kind == "simple_formation":
+        env_config = {
+            **env_kwargs,
+            "N": n_agents,
             "render_mode": render_mode,
         }
     else:

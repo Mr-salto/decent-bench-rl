@@ -66,7 +66,7 @@ class RLSmoothMeanEpisodeReturn(Metric):
             episode = n_eps - 1
 
         # Aggregate across agents for multiple episode indices.
-        return [float(np.mean([np.mean(agent.episode_return_history[max(0, episode-49):episode + 1]) for agent in rl_agent_view]))]
+        return [float(np.mean([np.mean(agent.episode_return_history[max(0, episode-29):episode + 1]) for agent in rl_agent_view]))]
 
 
 class RuntimeMeanEpisodeReturn(RuntimeMetric):

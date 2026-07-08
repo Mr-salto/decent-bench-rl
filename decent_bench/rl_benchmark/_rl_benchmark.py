@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from decent_bench.utils_rl.rl_checkpoint_manager import RLCheckpointManager
 
 
-_SUPPORTED_MP_ENV_KINDS = {"simple_spread", "simple_adversary"}
+_SUPPORTED_MP_ENV_KINDS = {"simple_spread", "simple_adversary", "simple_formation"}
 
 
 def resume_benchmark(
@@ -274,7 +274,7 @@ def _run_trials(  # noqa: PLR0917
     if max_processes != 1 and problem.env_kind not in _SUPPORTED_MP_ENV_KINDS:
         raise ValueError(
             "Multiprocessing in RL benchmark currently supports built-in environment kinds "
-            "'simple_spread' and 'simple_adversary' only. "
+            "'simple_spread', 'simple_adversary', and 'simple_formation' only. "
             "For custom env_kind, set max_processes=1."
         )
 

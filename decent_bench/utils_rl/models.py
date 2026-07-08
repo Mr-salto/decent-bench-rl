@@ -376,7 +376,7 @@ class QMixer(BaseModel):
                 nn.init.constant_(final_layer.bias, 0.0)
 
     def _enforce_nonneg(self, w: torch.Tensor) -> torch.Tensor:
-        return F.relu(w)
+        return F.softplus(w)
 
     def forward_torch(self, agent_qs: torch.Tensor, states: torch.Tensor) -> torch.Tensor:
         """
