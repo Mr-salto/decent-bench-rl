@@ -44,6 +44,12 @@ autodoc_type_aliases = {
     "Network": "decent_bench.networks.Network",
     "NetworkT": "decent_bench.utils.types.NetworkT",
 }
+autodoc_mock_imports = [
+    "mpe2",
+    "pygame",
+    "torch",
+    "torchvision",
+]
 
 nitpicky = True
 nitpick_ignore = [
@@ -51,7 +57,12 @@ nitpick_ignore = [
     ("py:class", "float64"),
     ("py:class", "numpy._typing._array_like._SupportsArray"),
     ("py:class", "numpy._typing._nested_sequence._NestedSequence"),
+    ("py:class", "torch.nn.Parameter"),
+    ("py:class", "torch.distributions.Categorical"),
+    ("py:class", "NetworkT"),
+    ("py:class", "Task"),
     ("py:class", "T"),
+    ("py:class", "SyncManager"),
 ]
 
 suppress_warnings = ["toc.duplicate"]
@@ -70,6 +81,7 @@ intersphinx_mapping = {
     "rich": ("https://rich.readthedocs.io/en/latest/", None),
     "sklearn": ("https://scikit-learn.org/stable/", None),
     "zstandard": ("https://python-zstandard.readthedocs.io/en/latest/", None),
+    "pandas": ("https://pandas.pydata.org/docs/", None),
 }
 
 
@@ -134,6 +146,12 @@ def _fix_missing_ref(app, env, node, contnode):
                 "",
                 "TensorflowTensor",
                 refuri="https://www.tensorflow.org/api_docs/python/tf/Tensor",
+            )
+        if target in {"nx.Graph", "networkx.Graph"}:
+            return nodes.reference(
+                "",
+                "networkx.Graph",
+                refuri="https://networkx.org/documentation/stable/reference/classes/graph.html#networkx.Graph",
             )
     return None
 

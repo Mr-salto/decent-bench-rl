@@ -62,9 +62,12 @@ class FedAlgorithm(Algorithm[FedNetwork]):
             )
         return {client: self.num_local_steps[client] for client in clients}
 
-    def _selected_clients_for_round(self, network: FedNetwork, iteration: int) -> list["Agent"]:
+    def select_clients(self, network: FedNetwork, iteration: int) -> list["Agent"]:
         """
-        Select participating clients for the current round from the currently active clients.
+        Select clients for the current federated round.
+
+        The method selects the subset of active clients that will receive the server broadcast and perform local
+        training. The clients are selected using ``self.selection_scheme``.
 
         If ``self.selection_scheme`` is ``None``, all active clients are selected.
         """
@@ -72,35 +75,56 @@ class FedAlgorithm(Algorithm[FedNetwork]):
         if not active_clients:
             return []
         if self.selection_scheme is None:
-            return list(active_clients)
-        return self.selection_scheme.select(active_clients, iteration)
-
-    def server_broadcast(self, network: FedNetwork, selected_clients: Sequence["Agent"]) -> None:
-        """Send the current server model to the selected clients."""
-        network.send(sender=network.server(), receiver=selected_clients, msg=network.server().x)
-
-    def _clients_with_server_broadcast(self, network: FedNetwork, selected_clients: Sequence["Agent"]) -> list["Agent"]:
-        """Return selected clients that received the current broadcast sent by :meth:`server_broadcast`."""
-        return [client for client in selected_clients if network.server() in client.messages]
+            selected_clients = list(active_clients)
+        else:
+            selected_clients = self.selection_scheme.select(active_clients, iteration)
+        self._record_selected_clients(selected_clients)
+        return selected_clients
 
     @staticmethod
-    def _get_server_broadcast(client: "Agent", server: "Agent") -> "Array":
+    def _record_selected_clients(selected_clients: Sequence["Agent"]) -> None:
+        """Record clients selected by a federated round."""
+        for client in selected_clients:
+            client._n_times_selected += 1  # noqa: SLF001
+
+    def server_broadcast(
+        self,
+        network: FedNetwork,
+        selected_clients: Sequence["Agent"],
+        channel: str = "default",
+    ) -> None:
+        """Send the current server model to the selected clients under ``channel``."""
+        network.send(sender=network.server(), receiver=selected_clients, msg=network.server().x, channel=channel)
+
+    def _clients_with_server_broadcast(
+        self,
+        network: FedNetwork,
+        selected_clients: Sequence["Agent"],
+        channel: str = "default",
+    ) -> list["Agent"]:
+        """Return selected clients that received :meth:`server_broadcast` under ``channel``."""
+        return [client for client in selected_clients if network.server() in client.messages(channel)]
+
+    @staticmethod
+    def _get_server_broadcast(client: "Agent", server: "Agent", channel: str = "default") -> "Array":
         """
-        Return the current server broadcast received by the client.
+        Return the current server broadcast received by the client under ``channel``.
 
         Raises:
             ValueError: if the client did not receive the current server broadcast.
 
         """
-        if server not in client.messages:
+        if server not in client.messages(channel):
             raise ValueError("Client did not receive the current server broadcast")
-        return iop.copy(client.messages[server])
+        return iop.copy(client.message(server, channel))
 
     @staticmethod
     def _weighted_average(values: Sequence["Array"], weights: Sequence[float], total_weight: float) -> "Array":
         """Compute a weighted average of same-shaped arrays."""
-        weighted_values = [value * weight for value, weight in zip(values, weights, strict=True)]
-        return iop.sum(iop.stack(weighted_values, dim=0), dim=0) / total_weight
+        weighted_sum = iop.zeros_like(values[0])
+        for value, weight in zip(values, weights, strict=True):
+            weighted_sum += value * weight
+        return weighted_sum / total_weight
 
     def aggregate(
         self,
@@ -112,10 +136,10 @@ class FedAlgorithm(Algorithm[FedNetwork]):
 
         This default federated aggregation assumes clients upload final local model states.
         """
-        received_clients = [client for client in participating_clients if client in network.server().messages]
+        received_clients = [client for client in participating_clients if client in network.server().messages()]
         if not received_clients:
             return
-        updates = [network.server().messages[client] for client in received_clients]
+        updates = [network.server().message(client) for client in received_clients]
         weights = [1.0] * len(received_clients)
         total_weight = float(len(received_clients))
         network.server().x = self._weighted_average(updates, weights, total_weight)

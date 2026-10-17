@@ -1,6 +1,11 @@
 decent\_bench.utils
 ===================
 
+.. toctree::
+   :maxdepth: 2
+
+   decent_bench.utils.interoperability
+
 
 .. toctree::
    :maxdepth: 2
@@ -8,7 +13,6 @@ decent\_bench.utils
    decent_bench.utils.array
    decent_bench.utils.agent_utils
    decent_bench.utils.checkpoint_manager
-   decent_bench.utils.interoperability
    decent_bench.utils.logger
    decent_bench.utils.network_utils
    decent_bench.utils.progress_bar

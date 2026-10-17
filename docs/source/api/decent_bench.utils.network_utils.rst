@@ -1,5 +1,5 @@
-decent_bench.utils.network_utils
-================================
+decent\_bench.utils.network\_utils
+==================================
 
 .. automodule:: decent_bench.utils.network_utils
    :members:
