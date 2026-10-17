@@ -701,3 +701,225 @@ class ActorCritic(BaseModel):
         policy_features = self.policy_trunk(obs_t)
         logits = self.policy_head(policy_features)
         return Categorical(logits=logits)
+
+
+class CentralizedActorCritic(BaseModel):
+    """
+    Centralized Actor-Critic model that produces both policy and value outputs.
+
+    Modes:
+    - Independent: actor and critic each have a separate model (default)
+    - shared_features (actor and critic share a common trunk)
+
+    Args:
+        obs_dim (int): dimension of flattened observations
+        state_dim (int): dimension of global state
+        n_actions (int): number of discrete actions
+        hidden_sizes (tuple[int, ...]): sizes of MLP hidden layers
+        shared_features (bool): whether to use a shared trunk
+        activation (Callable): activation function for hidden layers
+        device (str | torch.device): execution device ('cpu' or 'cuda')
+
+    """
+
+    def __init__(  # noqa: PLR0917
+        self,
+        obs_dim: int,
+        state_dim: int,
+        n_actions: int,
+        hidden_sizes: Sequence[int] = (64, 64),
+        activation: type[nn.Module] = nn.Tanh,
+        device: SupportedDevices = SupportedDevices.CPU,
+    ) -> None:
+        super().__init__(
+            obs_dim,
+            n_actions,
+            device,
+        )
+
+        self.hidden_sizes = list(hidden_sizes)
+        self.activation = activation
+        self.state_dim = int(state_dim)
+
+        self.policy_trunk, last_dim = self._build_mlp(self.obs_dim)
+        self.policy_head = nn.Linear(last_dim, self.n_actions)
+
+        self.value_trunk, last_dim = self._build_mlp(self.state_dim)
+        self.value_head = nn.Linear(last_dim, 1)
+
+        self._module = nn.ModuleDict({
+            "policy_trunk": self.policy_trunk,
+            "policy_head": self.policy_head,
+            "value_trunk": self.value_trunk,
+            "value_head": self.value_head,
+        })
+
+        self._init_weights_orthogonal()
+        self.move_to_device(self.device)
+
+    def _build_mlp(self, input_dim: int) -> tuple[nn.Sequential, int]:
+        layers: list[nn.Module] = []
+        in_dim = input_dim
+        for h in self.hidden_sizes:
+            layers.extend((nn.Linear(in_dim, h), self.activation()))
+            in_dim = h
+        trunk = nn.Sequential(*layers)
+        return trunk, in_dim
+
+    # Orthogonal weight init with per-layer gains
+    def _init_weights_orthogonal(self) -> None:
+        # Init trunk layers (hidden) with gain=sqrt(2)
+        for trunk in (self.policy_trunk, self.value_trunk):
+            for m in trunk.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.orthogonal_(m.weight, gain=math.sqrt(2))
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0.0)
+
+        # Actor head: tiny gain → near-uniform policy at init (high entropy)
+        nn.init.orthogonal_(self.policy_head.weight, gain=0.01)
+        nn.init.constant_(self.policy_head.bias, 0.0)
+
+        # Critic head: gain=1.0 → value estimates start near zero, unbiased
+        nn.init.orthogonal_(self.value_head.weight, gain=1.0)
+        nn.init.constant_(self.value_head.bias, 0.0)
+
+    def logits_values_torch(self, obs_t: torch.Tensor, state_t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute (logits, values) from torch input tensors.
+
+        Args:
+            obs_t: torch.Tensor shape [B, obs_dim] or [obs_dim]
+            state_t: torch.Tensor shape [B, state_dim] or [state_dim]
+
+        Returns:
+            logits with shape [B, n_actions]
+            values with shape [B]
+
+        """
+        obs_t = obs_t.float()
+        if obs_t.dim() == 1:
+            obs_t = obs_t.unsqueeze(0)
+
+        policy_feat = self.policy_trunk(obs_t)
+        value_feat = self.value_trunk(state_t)
+        logits = self.policy_head(policy_feat)
+        values = self.value_head(value_feat).squeeze(-1)
+
+        return logits, values
+
+    def forward_torch(
+        self, obs: torch.Tensor, state: torch.Tensor, deterministic: bool = True
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass in actor and critic models. Used for training.
+
+        Args:
+            obs: Observations
+            state: Global state
+            deterministic: Whether to sample or use deterministic actions
+        Returns:
+            action, value and log probability of the actions as torch tensors.
+
+        """
+        logits, values = self.logits_values_torch(obs, state)  # [B, A], [B]
+        dist = Categorical(logits=logits)  # create prob distribution associated with the current policy π(a|s)
+        actions_t = torch.argmax(logits, dim=1) if deterministic else dist.sample()  # type: ignore[no-untyped-call]
+        log_probs_t = dist.log_prob(actions_t)  # type: ignore[no-untyped-call] # [B]
+        return actions_t, values, log_probs_t
+
+    def forward(self, obs: Array, state: Array, deterministic: bool = True) -> tuple[Array, Array, Array]:
+        """
+        Forward pass in actor and critic models.
+
+        Args:
+            obs: Observations
+            state: Global state
+            deterministic: Whether to sample or use deterministic actions
+        Returns:
+            action, value and log probability of the actions as iop Arrays
+
+        """
+        obs_t = self._to_torch_tensor(obs)  # shape: [obs_dim] or [B, obs_dim]
+        state_t = self._to_torch_tensor(state)  # shape: [state_dim] or [B, state_dim]
+        with torch.no_grad():
+            actions_t, values_t, log_probs_t = self.forward_torch(obs_t, state_t, deterministic=deterministic)
+        action_arr = self._to_iop_array(actions_t)
+        value_arr = self._to_iop_array(values_t)
+        logprob_arr = self._to_iop_array(log_probs_t)
+
+        return action_arr, value_arr, logprob_arr
+
+    def evaluate_actions_torch(
+        self, obs_t: torch.Tensor, state_t: torch.Tensor, actions_t: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Compute (log_probs, entropy, values) for given obs and actions based on the current policy.
+
+        This function must allow gradients (used during policy update).
+
+        Args:
+            obs_t: Observations as Torch.tensor
+            state_t: Global state as Torch.tensor
+            actions_t: actions whose probability is evaluated as Torch.tensor
+        Returns:
+            log likelihood of taking actions, entropy of the action distribution and estimated value
+
+        """
+        logits, values = self.logits_values_torch(obs_t, state_t)
+        if actions_t.dim() == 0:
+            actions_t = actions_t.unsqueeze(0)  # [B]
+        dist = Categorical(logits=logits)
+        log_probs_t = dist.log_prob(actions_t)  # type: ignore[no-untyped-call]
+        entropy_t = dist.entropy()  # type: ignore[no-untyped-call]
+        return log_probs_t, entropy_t, values
+
+    def evaluate_actions(self, obs: Array, state: Array, actions: Array) -> tuple[Array, Array, Array]:
+        """
+        Compute (log_probs, entropy, values) for given obs and actions based on the current policy.
+
+        This function must allow gradients (used during policy update).
+
+        Args:
+            obs: Observations
+            state: Global state
+            actions: actions whose probability is evaluated
+        Returns:
+            log likelihood of taking actions, entropy of the action distribution and estimated value
+
+        """
+        obs_t = self._to_torch_tensor(obs)
+        actions_t = self._to_torch_tensor(actions).long()
+        state_t = self._to_torch_tensor(state)
+
+        if obs_t.dim() == 1:
+            obs_t = obs_t.unsqueeze(0)
+        if actions_t.dim() == 0:
+            actions_t = actions_t.unsqueeze(0)
+
+        logprobs_t, entropy_t, values_t = self.evaluate_actions_torch(obs_t, state_t, actions_t)
+
+        logprobs_arr = self._to_iop_array(logprobs_t)
+        entropy_arr = self._to_iop_array(entropy_t)
+        values_arr = self._to_iop_array(values_t)
+
+        return logprobs_arr, entropy_arr, values_arr
+
+    def get_action_and_value(self, obs: Array, state: Array, deterministic: bool = False) -> tuple[int, float, float]:
+        """
+        Interface compatible with RLAgent.act(). Equivalent to forward().
+
+        Args:
+            obs: observation (iop Array or numpy array), shape [obs_dim]
+            state: global state (iop Array or numpy array), shape [state_dim]
+            deterministic: if True, take the greedy (argmax) action
+
+        Returns:
+            action, log-probability, value estimate.
+
+        """
+        action_arr, value_arr, logprob_arr = self.forward(obs, state, deterministic=deterministic)
+        action = int(iop.to_torch(action_arr, self.device).squeeze().item())
+        logprob = float(iop.to_torch(logprob_arr, self.device).squeeze().item())
+        value = float(iop.to_torch(value_arr, self.device).squeeze().item())
+        return (action, logprob, value)

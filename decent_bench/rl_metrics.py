@@ -27,22 +27,22 @@ class RLMeanEpisodeReturn(Metric):
 
     def compute(
         self,
-        rl_agent_view: list[RLAgentMetricsView],
+        rl_agent_views: list[RLAgentMetricsView],
         problem: "BenchmarkProblem",  # noqa: ARG002
         episode: int,
     ) -> Sequence[float]:
         """Return the mean episode return for the selected episode index."""
-        n_eps = self._common_episode_count(rl_agent_view)
+        n_eps = self._common_episode_count(rl_agent_views)
 
         if episode == -1:
             episode = n_eps - 1
 
         # Aggregate across agents for a single episode index.
-        return [float(np.mean([agent.episode_return_history[episode] for agent in rl_agent_view]))]
+        return [float(np.mean([agent.episode_return_history[episode] for agent in rl_agent_views]))]
 
 
 class RLSmoothMeanEpisodeReturn(Metric):
-    """Mean episode return aggregated across agents averaged over the last 20 episodes"""
+    """Mean episode return aggregated across agents averaged over the last 50 episodes"""
 
     description: str = "Smoothen Mean Episode Return"
 
@@ -59,14 +59,14 @@ class RLSmoothMeanEpisodeReturn(Metric):
         problem: "BenchmarkProblem",  # noqa: ARG002
         episode: int,
     ) -> Sequence[float]:
-        """Return the mean episode return for the selected episode index averaged over the last 20 episodes."""
+        """Return the mean episode return for the selected episode index averaged over the last 50 episodes."""
         n_eps = self._common_episode_count(rl_agent_view)
 
         if episode == -1:
             episode = n_eps - 1
 
         # Aggregate across agents for multiple episode indices.
-        return [float(np.mean([np.mean(agent.episode_return_history[max(0, episode-29):episode + 1]) for agent in rl_agent_view]))]
+        return [float(np.mean([np.mean(agent.episode_return_history[max(0, episode-49):episode + 1]) for agent in rl_agent_view]))]
 
 
 class RuntimeMeanEpisodeReturn(RuntimeMetric):

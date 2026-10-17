@@ -13,7 +13,7 @@ from decent_bench.environments import MPE, StepResult
 from decent_bench.rl_agents import LinearDecreasingEpsilon, RLAgent
 from decent_bench.utils.array import Array
 from decent_bench.utils.types import SupportedDevices
-from decent_bench.utils_rl.models import ActorCritic, DQNPolicy, QMixer
+from decent_bench.utils_rl.models import ActorCritic, CentralizedActorCritic, DQNPolicy, QMixer
 from decent_bench.utils_rl.replay_buffer import JointReplayBuffer, RolloutBuffer, SimpleReplayBuffer
 
 
@@ -36,12 +36,13 @@ class RLAlgorithm(ABC):
         """Name of the algorithm."""
 
     @abstractmethod
-    def initialize(self, agents: list[RLAgent]) -> None:
+    def initialize(self, agents: list[RLAgent], env: MPE) -> None:
         """
         Initialize the algorithm.
 
         Args:
             agents: provides agents
+            env: environment to run the algorithm on.
 
         """
 
@@ -124,7 +125,7 @@ class RLAlgorithm(ABC):
             RuntimeError: if any agent does not have an observation before action selection.
 
         """
-        self.initialize(agents)
+        self.initialize(agents, env)
         mean_episode_returns: list[float] = []
 
         for _episode in range(self.episodes):
@@ -199,10 +200,10 @@ class IDQN(RLAlgorithm):
     target_update_freq: int = 100
     train_freq: int = 1
     grad_updates_per_step: int = 1
-    parameter_sharing: bool = False
+    parameter_sharing: bool = True
     device: SupportedDevices = SupportedDevices.CPU
 
-    def initialize(self, agents: list[RLAgent]) -> None:
+    def initialize(self, agents: list[RLAgent], env: MPE) -> None:
         """
         Initialize agent-local DQN policies, optimizers, and replay buffers.
 
@@ -328,14 +329,14 @@ class IDQN(RLAlgorithm):
                 q_pred = q_values.gather(1, actions_t.unsqueeze(1)).squeeze(1)
 
                 with torch.no_grad():
-                    # Double DQN: online selects the action, target evaluates it
+                    # Double DQN: online network selects the action, target evaluates it
                     next_actions = policy.q_network.torch_module(next_obs_t).argmax(dim=1, keepdim=True)
                     policy.target_q_network.torch_module.eval()
                     next_q_values = policy.target_q_network.torch_module(next_obs_t)  # [B, A]
                     next_q_max = next_q_values.gather(1, next_actions).squeeze(1)
                     td_target = rewards_t + self.gamma * (1.0 - dones_t) * next_q_max
 
-                loss = functional.smooth_l1_loss(q_pred, td_target)
+                loss = functional.mse_loss(q_pred, td_target)
                 optimizer.zero_grad()
                 loss.backward()  # type: ignore[no-untyped-call]
                 clip_grad_norm_(policy.parameters(), max_norm=5.0)
@@ -438,7 +439,7 @@ class QMIX(RLAlgorithm):
         for agent in agents:
             agent.optimizer = optimizer
 
-    def initialize(self, agents: list[RLAgent]) -> None:
+    def initialize(self, agents: list[RLAgent], env: MPE) -> None:
         """
         Initialize agent-local DQN policies, shared mixer, optimizer, and replay buffer.
 
@@ -602,9 +603,13 @@ class QMIX(RLAlgorithm):
             rewards_t = iop.to_torch(batch["rewards"], dev) # rewards scaling
             dones_t = iop.to_torch(batch["dones"], dev).float()
             state_t = iop.to_torch(batch["state"], dev)
-            state_t = (state_t - state_t.mean()) / (state_t.std() + 1e-5) # state normalization
             next_state_t = iop.to_torch(batch["next_state"], dev)
-            next_state_t = (next_state_t - next_state_t.mean()) / (next_state_t.std() + 1e-5) # state normalization
+
+            # state normalization
+            # state_mean = state_t.mean(dim=0, keepdim=True)
+            # state_std  = state_t.std(dim=0, keepdim=True) + 1e-5
+            # state_t      = (state_t      - state_mean) / state_std
+            # next_state_t = (next_state_t - state_mean) / state_std
 
             agent_qs: list[torch.Tensor] = []
             next_agent_qs: list[torch.Tensor] = []
@@ -637,7 +642,7 @@ class QMIX(RLAlgorithm):
                 target_mixer.torch_module.eval()
                 target_q_tot = target_mixer.forward_torch(next_agent_qs_t, next_state_t)
                 td_target = rewards_t + self.gamma * (1.0 - dones_t) * target_q_tot
-                td_target = torch.clamp(td_target, -100, 100)
+                td_target = torch.clamp(td_target, -50, 0)
 
             loss = functional.mse_loss(q_tot, td_target)
             optimizer.zero_grad()
@@ -650,7 +655,7 @@ class QMIX(RLAlgorithm):
                 for agent in agents:
                     params.extend(list(agent.policy.parameters()))
             pre_clip_norm = torch.nn.utils.clip_grad_norm_(params, max_norm=float('inf'))
-            clip_grad_norm_(params, max_norm=5)
+            clip_grad_norm_(params, max_norm=10)
 
             # -- DIAGNOSTICS --
             if agents[0].dqn_train_steps % 5000 == 0 and agents[0].dqn_train_steps > 0:
@@ -719,7 +724,7 @@ class A2C(RLAlgorithm):
     ent_coef: float = 0.01
     device: SupportedDevices = SupportedDevices.CPU
 
-    def initialize(self, agents: list[RLAgent]) -> None:
+    def initialize(self, agents: list[RLAgent], env: MPE) -> None:
         """
         Initialize agent-local ActorCritic policies and rollout buffers.
 
@@ -738,7 +743,7 @@ class A2C(RLAlgorithm):
                 obs_dim=obs_dim,
                 n_actions=n_actions,
                 hidden_sizes=(64, 64),
-                shared_features=False,
+                shared_features=True,
                 device=self.device,
             )
             agent.attach_policy(policy)
@@ -838,9 +843,8 @@ class A2C(RLAlgorithm):
 
             optimizer.zero_grad()
             loss.backward()  # type: ignore[no-untyped-call]
-            clip_grad_norm_(policy.parameters(), max_norm=10.0)
+            clip_grad_norm_(policy.parameters(), max_norm=5)
             optimizer.step()
-            print(f"loss={loss.item():.5f}")
             agent.train_step += 1
             rollout.clear()
 
@@ -937,16 +941,73 @@ class PPO(A2C):
                     clipped = torch.clamp(ratio, 1.0 - self.clip_coef, 1.0 + self.clip_coef) * mb_adv
                     policy_loss = -torch.min(unclipped, clipped).mean()
 
-                    value_loss = functional.mse_loss(values_t, mb_returns)
+                    value_loss = functional.smooth_l1_loss(values_t, mb_returns)
                     entropy_loss = -entropy_t.mean()
 
                     loss = policy_loss + self.vf_coef * value_loss + self.ent_coef * entropy_loss
 
                     optimizer.zero_grad()
                     loss.backward()  # type: ignore[no-untyped-call]
-                    clip_grad_norm_(policy.parameters(), max_norm=10.0)
+                    clip_grad_norm_(policy.parameters(), max_norm=5)
                     optimizer.step()
 
                     agent.train_step += 1
 
             rollout.clear()
+
+class MAPPO(PPO):
+    """
+    Proximal Policy Optimization (PPO).
+
+    MAPPO extends PPO by using a centralized critic that takes the global state as input.
+    Parameter sharing is the default for MAPPO since all agents share the same CentralizedActorCritic policy.
+    """
+
+    name: str = "MAPPO"
+
+    state_dim: int | None = None
+
+    def initialize(self, agents: list[RLAgent], env: MPE) -> None:
+        
+        state = env.get_global_state()
+        if self.state_dim is None:
+            shape = np.asarray(state).shape
+            self.state_dim = int(np.prod(shape))
+
+        obs_space = agents[0].observation_space
+        if obs_space is None:
+            raise RuntimeError(f"Agent {agents[0].id} has no observation_space set during QMIX.initialize()")
+        obs_dim = int(np.prod(obs_space.shape))
+        n_actions = agents[0].action_space.n
+        
+        shared_policy = CentralizedActorCritic(
+            obs_dim,
+            self.state_dim,
+            n_actions,
+        )
+
+        optimizer = torch.optim.Adam(shared_policy.parameters(), lr=self.lr)
+
+        for agent in agents:
+            agent.attach_policy(shared_policy)
+            agent.optimizer = optimizer
+            agent.rollout_buffer = RolloutBuffer()
+
+    def on_step_collect(self, _agents: list[RLAgent], results: dict[RLAgent, StepResult]) -> None:
+        for agent, (next_obs, reward, done, info) in results.items():
+            obs_t = agent.obs_at_act
+            state_t = info["state"]   # 👈 IMPORTANT (depends on env)
+
+            action_t = agent.last_action
+            logprob_t = float(agent.last_logprob or 0.0)
+            value_t = float(agent.last_value or 0.0)
+
+            agent.rollout_buffer.add(
+                obs_t,
+                state_t,
+                action_t,
+                reward,
+                done,
+                logprob_t,
+                value_t,
+            )
